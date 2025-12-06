@@ -34,6 +34,18 @@ function debugSheetIds() {
 }
 
 /**
+ * Test function to check if proposals are being saved and retrieved
+ * Run this directly in Apps Script
+ */
+function testGetAllProposals() {
+  Logger.log('=== TEST: getAllProposals ===');
+  var proposals = getAllProposals();
+  Logger.log('Result: ' + proposals.length + ' proposals returned');
+  Logger.log('Proposals: ' + JSON.stringify(proposals));
+  return proposals;
+}
+
+/**
  * Runs when the document is opened (for spreadsheet-bound scripts)
  * For standalone scripts, this will be skipped automatically
  */
@@ -539,52 +551,89 @@ function getProposalStatus(proposalId) {
  * Get all open proposals for dashboard
  */
 function getAllProposals() {
+  Logger.log('=== getAllProposals START ===');
+  Logger.log('Timestamp: ' + new Date().toISOString());
+  
   var masterSheetId = getMasterStatusSheetId();
+  Logger.log('masterSheetId: [' + masterSheetId + ']');
+  
   if (!masterSheetId) {
+    Logger.log('ERROR: No masterSheetId - returning empty array');
     return [];
   }
   
   try {
+    Logger.log('Opening spreadsheet...');
     var spreadsheet = SpreadsheetApp.openById(masterSheetId);
-    var proposalsSheet = getOrCreateSheet(spreadsheet, SHEET_NAME);
-    var dataRange = proposalsSheet.getDataRange();
-    var values = dataRange.getValues();
+    Logger.log('Spreadsheet opened successfully');
     
-    if (values.length < 2) {
+    var dataSheet = getOrCreateSheet(spreadsheet, DATA_SHEET_NAME);
+    Logger.log('Data sheet retrieved: ' + dataSheet.getName());
+    
+    var dataRange = dataSheet.getDataRange();
+    var dataValues = dataRange.getValues();
+    
+    Logger.log('Data range: ' + dataRange.getNumRows() + ' rows, ' + dataRange.getNumColumns() + ' cols');
+    Logger.log('Data values length: ' + dataValues.length);
+    
+    if (dataValues.length < 2) {
+      Logger.log('No proposals found - only ' + dataValues.length + ' row(s) (header only or empty)');
+      Logger.log('=== getAllProposals END (empty) ===');
       return []; // No data rows (header only)
     }
     
     var proposals = [];
-    var headers = values[0];
-    var proposalIdCol = headers.indexOf('Proposal ID');
+    Logger.log('Processing ' + (dataValues.length - 1) + ' proposal row(s)...');
     
-    // Skip header row
-    for (var i = 1; i < values.length; i++) {
-      var row = values[i];
-      var proposalId = row[proposalIdCol];
-      var status = row[headers.indexOf('Status')];
+    // Read all proposals from the data sheet (skip header row)
+    for (var i = 1; i < dataValues.length; i++) {
+      var proposalId = dataValues[i][0];
+      Logger.log('Row ' + i + ': proposalId = [' + proposalId + ']');
       
-      // Only include open proposals
-      if (proposalId && status !== 'Closed') {
-        var proposal = getProposalData(proposalId);
-        if (proposal) {
-          proposals.push({
-            id: proposal.id,
-            name: proposal.name,
-            type: proposal.type,
-            status: proposal.status,
-            progress: proposal.progress,
-            owner: proposal.owner,
-            updatedAt: proposal.updatedAt,
-            deadline: proposal.deadline
-          });
+      if (!proposalId) {
+        Logger.log('Row ' + i + ': Skipping - no proposalId');
+        continue;
+      }
+      
+      try {
+        var jsonData = dataValues[i][1];
+        Logger.log('Row ' + i + ': jsonData length = ' + (jsonData ? jsonData.length : 'null'));
+        
+        if (jsonData) {
+          var proposal = JSON.parse(jsonData);
+          Logger.log('Row ' + i + ': Parsed proposal - name: ' + proposal.name + ', status: ' + proposal.status);
+          
+          // Only include open proposals
+          if (proposal.status !== 'Closed') {
+            proposals.push({
+              id: proposal.id,
+              name: proposal.name,
+              type: proposal.type,
+              status: proposal.status,
+              progress: proposal.progress,
+              owner: proposal.owner,
+              updatedAt: proposal.updatedAt,
+              deadline: proposal.deadline
+            });
+            Logger.log('Row ' + i + ': Added to proposals array');
+          } else {
+            Logger.log('Row ' + i + ': Skipped - status is Closed');
+          }
+        } else {
+          Logger.log('Row ' + i + ': No jsonData found');
         }
+      } catch (e) {
+        Logger.log('ERROR parsing proposal row ' + i + ' (ID: ' + proposalId + '): ' + e.toString());
+        Logger.log('Stack: ' + e.stack);
       }
     }
     
+    Logger.log('=== getAllProposals END: Returning ' + proposals.length + ' proposal(s) ===');
     return proposals;
   } catch (e) {
-    Logger.log('Error getting all proposals: ' + e.toString());
+    Logger.log('=== getAllProposals ERROR ===');
+    Logger.log('Error: ' + e.toString());
+    Logger.log('Stack: ' + e.stack);
     return [];
   }
 }
