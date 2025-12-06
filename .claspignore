@@ -1,0 +1,11 @@
+# Ignore files that shouldn't be pushed to Apps Script
+node_modules/
+.git/
+*.md
+README.md
+SETUP.md
+docs/
+scripts/
+config/
+checklist-template.md
+

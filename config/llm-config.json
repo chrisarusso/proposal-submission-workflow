@@ -1,0 +1,30 @@
+{
+  "provider": "openai",
+  "apiKey": "your-api-key-here",
+  "model": "gpt-4",
+  "notes": {
+    "openai": {
+      "provider": "openai",
+      "endpoint": "chat/completions",
+      "model": "gpt-4",
+      "apiKeyLocation": "Script Properties",
+      "setup": "Run configureLLM('openai', 'your-key') in Apps Script"
+    },
+    "anthropic": {
+      "provider": "anthropic",
+      "endpoint": "messages",
+      "model": "claude-3-opus-20240229",
+      "apiKeyLocation": "Script Properties",
+      "setup": "Run configureLLM('anthropic', 'your-key') in Apps Script"
+    },
+    "google": {
+      "provider": "google",
+      "endpoint": "models/gemini-pro:generateContent",
+      "model": "gemini-pro",
+      "apiKeyLocation": "Script Properties",
+      "setup": "Run configureLLM('google', 'your-key') in Apps Script"
+    }
+  },
+  "instructions": "This is a template file. Do not commit actual API keys. Configure LLM via Script Properties in Google Apps Script using configureLLM() function."
+}
+

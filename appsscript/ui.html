@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Proposal Submission Dashboard</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: #f5f5f5;
+      padding: 20px;
+      color: #333;
+    }
+    
+    .header {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    
+    .header h1 {
+      color: #1a73e8;
+      font-size: 24px;
+    }
+    
+    .btn {
+      background: #1a73e8;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+    }
+    
+    .btn:hover {
+      background: #1557b0;
+    }
+    
+    .btn-secondary {
+      background: #5f6368;
+    }
+    
+    .btn-secondary:hover {
+      background: #3c4043;
+    }
+    
+    .btn-success {
+      background: #34a853;
+    }
+    
+    .btn-success:hover {
+      background: #2d8e47;
+    }
+    
+    .btn-danger {
+      background: #ea4335;
+    }
+    
+    .btn-danger:hover {
+      background: #c5221f;
+    }
+    
+    .filters {
+      background: white;
+      padding: 15px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      display: flex;
+      gap: 15px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    
+    .filters select, .filters input {
+      padding: 8px 12px;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    
+    .table-container {
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      overflow-x: auto;
+    }
+    
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    
+    thead {
+      background: #f8f9fa;
+    }
+    
+    th {
+      padding: 12px;
+      text-align: left;
+      font-weight: 600;
+      color: #5f6368;
+      border-bottom: 2px solid #dadce0;
+    }
+    
+    td {
+      padding: 12px;
+      border-bottom: 1px solid #e8eaed;
+    }
+    
+    tr:hover {
+      background: #f8f9fa;
+    }
+    
+    .status-badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    
+    .status-draft { background: #e8f0fe; color: #1967d2; }
+    .status-in-progress { background: #fef7e0; color: #f9ab00; }
+    .status-in-review { background: #e8f5e9; color: #137333; }
+    .status-ready { background: #e6f4ea; color: #0d652d; }
+    .status-submitted { background: #e8f0fe; color: #1967d2; }
+    .status-closed { background: #f1f3f4; color: #5f6368; }
+    
+    .progress-bar {
+      width: 100%;
+      height: 8px;
+      background: #e8eaed;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    
+    .progress-fill {
+      height: 100%;
+      background: #34a853;
+      transition: width 0.3s;
+    }
+    
+    .actions {
+      display: flex;
+      gap: 8px;
+    }
+    
+    .actions button {
+      padding: 6px 12px;
+      font-size: 12px;
+    }
+    
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: #5f6368;
+    }
+    
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: #5f6368;
+    }
+    
+    .empty-state h2 {
+      margin-bottom: 10px;
+      color: #3c4043;
+    }
+    
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.5);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    .modal.active {
+      display: flex;
+    }
+    
+    .modal-content {
+      background: white;
+      padding: 30px;
+      border-radius: 8px;
+      max-width: 500px;
+      width: 90%;
+      max-height: 80vh;
+      overflow-y: auto;
+    }
+    
+    .form-group {
+      margin-bottom: 20px;
+    }
+    
+    .form-group label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 500;
+      color: #3c4043;
+    }
+    
+    .form-group input,
+    .form-group select,
+    .form-group textarea {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    
+    .form-group textarea {
+      min-height: 100px;
+      resize: vertical;
+    }
+    
+    .form-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Proposal Submission Dashboard</h1>
+    <div>
+      <button class="btn btn-secondary" onclick="refreshDashboard()">Refresh</button>
+      <button class="btn" onclick="showCreateProposalModal()">Create New Proposal</button>
+    </div>
+  </div>
+  
+  <div class="filters">
+    <label>Status:</label>
+    <select id="statusFilter" onchange="filterProposals()">
+      <option value="">All</option>
+      <option value="Draft">Draft</option>
+      <option value="In Progress">In Progress</option>
+      <option value="In Review">In Review</option>
+      <option value="Ready for Submission">Ready for Submission</option>
+      <option value="Submitted">Submitted</option>
+      <option value="Closed">Closed</option>
+    </select>
+    
+    <label>Type:</label>
+    <select id="typeFilter" onchange="filterProposals()">
+      <option value="">All</option>
+      <option value="RFP">RFP</option>
+      <option value="Client">Client</option>
+    </select>
+    
+    <label>Search:</label>
+    <input type="text" id="searchInput" placeholder="Search proposals..." onkeyup="filterProposals()">
+  </div>
+  
+  <div class="table-container">
+    <div id="loading" class="loading">Loading proposals...</div>
+    <div id="emptyState" class="empty-state" style="display: none;">
+      <h2>No proposals found</h2>
+      <p>Create your first proposal to get started.</p>
+    </div>
+    <table id="proposalsTable" style="display: none;">
+      <thead>
+        <tr>
+          <th>Proposal Name</th>
+          <th>Type</th>
+          <th>Status</th>
+          <th>Progress</th>
+          <th>Owner</th>
+          <th>Last Updated</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="proposalsBody">
+      </tbody>
+    </table>
+  </div>
+  
+  <!-- Create Proposal Modal -->
+  <div id="createModal" class="modal">
+    <div class="modal-content">
+      <h2>Create New Proposal</h2>
+      <form id="createForm">
+        <div class="form-group">
+          <label>Proposal Name *</label>
+          <input type="text" id="proposalName" required>
+        </div>
+        <div class="form-group">
+          <label>Type *</label>
+          <select id="proposalType" required>
+            <option value="RFP">RFP</option>
+            <option value="Client">Client</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Deadline</label>
+          <input type="date" id="proposalDeadline">
+        </div>
+        <div class="form-group">
+          <label>Document URL (Google Doc)</label>
+          <input type="text" id="proposalDocUrl" placeholder="https://docs.google.com/document/d/...">
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeCreateModal()">Cancel</button>
+          <button type="submit" class="btn">Create Proposal</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  
+  <script>
+    var allProposals = [];
+    var filteredProposals = [];
+    
+    // Load proposals on page load
+    google.script.run
+      .withSuccessHandler(displayProposals)
+      .withFailureHandler(showError)
+      .getAllProposals();
+    
+    function displayProposals(proposals) {
+      allProposals = proposals;
+      filteredProposals = proposals;
+      
+      document.getElementById('loading').style.display = 'none';
+      
+      if (proposals.length === 0) {
+        document.getElementById('emptyState').style.display = 'block';
+        document.getElementById('proposalsTable').style.display = 'none';
+        return;
+      }
+      
+      document.getElementById('emptyState').style.display = 'none';
+      document.getElementById('proposalsTable').style.display = 'table';
+      
+      var tbody = document.getElementById('proposalsBody');
+      tbody.innerHTML = '';
+      
+      filteredProposals.forEach(function(proposal) {
+        var row = document.createElement('tr');
+        row.innerHTML = 
+          '<td><strong>' + escapeHtml(proposal.name) + '</strong></td>' +
+          '<td>' + escapeHtml(proposal.type) + '</td>' +
+          '<td><span class="status-badge status-' + proposal.status.toLowerCase().replace(/\s+/g, '-') + '">' + escapeHtml(proposal.status) + '</span></td>' +
+          '<td><div class="progress-bar"><div class="progress-fill" style="width: ' + proposal.progress + '%"></div></div> ' + proposal.progress + '%</td>' +
+          '<td>' + escapeHtml(proposal.owner) + '</td>' +
+          '<td>' + formatDate(proposal.updatedAt) + '</td>' +
+          '<td><div class="actions">' +
+            '<button class="btn btn-secondary" onclick="viewProposal(\'' + proposal.id + '\')">View</button>' +
+            '<button class="btn" onclick="editProposal(\'' + proposal.id + '\')">Edit</button>' +
+          '</div></td>';
+        tbody.appendChild(row);
+      });
+    }
+    
+    function filterProposals() {
+      var statusFilter = document.getElementById('statusFilter').value;
+      var typeFilter = document.getElementById('typeFilter').value;
+      var searchTerm = document.getElementById('searchInput').value.toLowerCase();
+      
+      filteredProposals = allProposals.filter(function(proposal) {
+        var matchStatus = !statusFilter || proposal.status === statusFilter;
+        var matchType = !typeFilter || proposal.type === typeFilter;
+        var matchSearch = !searchTerm || 
+          proposal.name.toLowerCase().indexOf(searchTerm) !== -1 ||
+          proposal.owner.toLowerCase().indexOf(searchTerm) !== -1;
+        
+        return matchStatus && matchType && matchSearch;
+      });
+      
+      displayProposals(filteredProposals);
+    }
+    
+    function refreshDashboard() {
+      document.getElementById('loading').style.display = 'block';
+      document.getElementById('proposalsTable').style.display = 'none';
+      document.getElementById('emptyState').style.display = 'none';
+      
+      google.script.run
+        .withSuccessHandler(displayProposals)
+        .withFailureHandler(showError)
+        .getAllProposals();
+    }
+    
+    function showCreateProposalModal() {
+      document.getElementById('createModal').classList.add('active');
+      document.getElementById('createForm').reset();
+    }
+    
+    function closeCreateModal() {
+      document.getElementById('createModal').classList.remove('active');
+    }
+    
+    document.getElementById('createForm').addEventListener('submit', function(e) {
+      e.preventDefault();
+      
+      var proposalData = {
+        name: document.getElementById('proposalName').value,
+        type: document.getElementById('proposalType').value,
+        deadline: document.getElementById('proposalDeadline').value || null,
+        documentUrl: document.getElementById('proposalDocUrl').value || null
+      };
+      
+      // Extract document ID from URL if provided
+      if (proposalData.documentUrl) {
+        var match = proposalData.documentUrl.match(/\/d\/([a-zA-Z0-9-_]+)/);
+        if (match) {
+          proposalData.documentId = match[1];
+        }
+      }
+      
+      google.script.run
+        .withSuccessHandler(function(proposal) {
+          closeCreateModal();
+          refreshDashboard();
+        })
+        .withFailureHandler(showError)
+        .createProposal(proposalData);
+    });
+    
+    function viewProposal(proposalId) {
+      google.script.run.showProposalDetail(proposalId);
+    }
+    
+    function editProposal(proposalId) {
+      viewProposal(proposalId);
+    }
+    
+    function formatDate(dateString) {
+      if (!dateString) return 'N/A';
+      var date = new Date(dateString);
+      return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    }
+    
+    function escapeHtml(text) {
+      var div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+    
+    function showError(error) {
+      alert('Error: ' + error.message);
+      document.getElementById('loading').style.display = 'none';
+    }
+  </script>
+</body>
+</html>
+

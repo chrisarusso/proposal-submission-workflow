@@ -1,0 +1,27 @@
+{
+  "name": "proposal-submission-workflow",
+  "version": "1.0.0",
+  "description": "Internal workflow system for proposal submissions using Google Apps Script",
+  "scripts": {
+    "clasp:login": "clasp login",
+    "clasp:push": "clasp push",
+    "clasp:pull": "clasp pull",
+    "clasp:open": "clasp open",
+    "clasp:deploy": "clasp deploy",
+    "clasp:logs": "clasp logs",
+    "setup": "npm install && echo 'Setup complete! Run: npm run clasp:login'"
+  },
+  "devDependencies": {
+    "@google/clasp": "^2.4.2"
+  },
+  "keywords": [
+    "google-apps-script",
+    "proposal",
+    "workflow",
+    "automation"
+  ],
+  "author": "",
+  "license": "UNLICENSED",
+  "private": true
+}
+
