@@ -1,6 +1,3 @@
-# clasp configuration (may contain script IDs)
-.clasp.json
-
 # Node modules (if using npm/clasp)
 node_modules/
 

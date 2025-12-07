@@ -189,6 +189,60 @@ function extractTextFromDocument(documentId) {
 }
 
 /**
+ * Get text from the first slide (Slides) or first ~1k chars of first section (Docs).
+ * Useful for quick POC that Drive content is readable.
+ */
+function getFirstSlideText(documentId) {
+  if (!documentId) {
+    throw new Error('Document ID is required');
+  }
+
+  // Try Slides first
+  try {
+    var presentation = SlidesApp.openById(documentId);
+    var slides = presentation.getSlides();
+    if (slides && slides.length > 0) {
+      var first = slides[0];
+      var text = '';
+
+      // Text boxes
+      first.getShapes().forEach(function(shape) {
+        if (shape.getShapeType() === SlidesApp.ShapeType.TEXT_BOX) {
+          text += shape.getText().asString() + '\n';
+        }
+      });
+
+      // Tables
+      first.getTables().forEach(function(table) {
+        for (var r = 0; r < table.getNumRows(); r++) {
+          for (var c = 0; c < table.getNumColumns(); c++) {
+            text += table.getCell(r, c).getText().asString() + ' ';
+          }
+          text += '\n';
+        }
+      });
+
+      if (text.trim()) {
+        return text.trim();
+      }
+    }
+  } catch (e) {
+    // Fall through to Doc handling
+    Logger.log('Slides first-page read failed, trying Doc: ' + e.toString());
+  }
+
+  // Fallback: try as Google Doc, return first ~1k chars
+  try {
+    var doc = DocumentApp.openById(documentId);
+    var bodyText = doc.getBody().getText();
+    return bodyText ? bodyText.substring(0, 1000) : '';
+  } catch (e2) {
+    Logger.log('Doc read failed: ' + e2.toString());
+    throw new Error('Unable to read first slide/page text for documentId: ' + documentId);
+  }
+}
+
+/**
  * LLM-based spelling and grammar check
  * @param {string} documentId - Google Doc or Slides ID
  * @param {object} llmConfig - LLM configuration

@@ -46,6 +46,133 @@ function testGetAllProposals() {
 }
 
 /**
+ * Minimal loader test: fetch one proposal (or the first available)
+ * Run this in Apps Script with an optional proposalId argument.
+ */
+function testLoadProposalById(proposalId) {
+  Logger.log('=== TEST: getProposalData ===');
+  Logger.log('Input proposalId: ' + proposalId);
+
+  var targetId = proposalId;
+
+  if (!targetId) {
+    // Grab the first proposal ID from the data sheet
+    var masterSheetId = getMasterStatusSheetId();
+    if (!masterSheetId) {
+      throw new Error('MASTER_STATUS_SHEET_ID not set. Run initializeSheetIds() first.');
+    }
+
+    var spreadsheet = SpreadsheetApp.openById(masterSheetId);
+    var dataSheet = getOrCreateSheet(spreadsheet, DATA_SHEET_NAME);
+    var values = dataSheet.getDataRange().getValues();
+
+    if (values.length < 2) {
+      throw new Error('ProposalData sheet has no proposal rows to load.');
+    }
+
+    for (var i = 1; i < values.length; i++) {
+      if (values[i][0]) {
+        targetId = values[i][0];
+        break;
+      }
+    }
+
+    if (!targetId) {
+      throw new Error('No proposal IDs found in ProposalData sheet.');
+    }
+  }
+
+  var proposal = getProposalData(targetId);
+  Logger.log('Loaded proposal? ' + (proposal ? 'YES' : 'NO'));
+  if (proposal) {
+    Logger.log('Proposal name: ' + proposal.name);
+    Logger.log('Status: ' + proposal.status + ', Stage: ' + proposal.stage);
+    Logger.log('Owner: ' + proposal.owner + ', UpdatedAt: ' + proposal.updatedAt);
+    Logger.log('DocumentId: ' + proposal.documentId + ', DocumentUrl: ' + proposal.documentUrl);
+    Logger.log('Checklist items: ' + (proposal.checklist && proposal.checklist.items ? proposal.checklist.items.length : 0));
+  }
+
+  return proposal;
+}
+
+/**
+ * Debug storage: reports sheet presence and row counts.
+ */
+function debugStorageState() {
+  var masterSheetId = getMasterStatusSheetId();
+  if (!masterSheetId) {
+    throw new Error('MASTER_STATUS_SHEET_ID not configured. Run initializeSheetIds() first.');
+  }
+
+  var spreadsheet = SpreadsheetApp.openById(masterSheetId);
+  var proposalsSheet = spreadsheet.getSheetByName(SHEET_NAME);
+  var dataSheet = spreadsheet.getSheetByName(DATA_SHEET_NAME);
+
+  var result = {
+    masterSheetId: masterSheetId,
+    proposalsSheet: proposalsSheet ? { name: proposalsSheet.getName(), rows: proposalsSheet.getLastRow() } : null,
+    dataSheet: dataSheet ? { name: dataSheet.getName(), rows: dataSheet.getLastRow(), hidden: dataSheet.isSheetHidden() } : null
+  };
+
+  Logger.log('Storage state: ' + JSON.stringify(result));
+  return result;
+}
+
+/**
+ * Inspect existing rows in ProposalData: logs row, proposalId, name, status, updatedAt.
+ */
+function debugListProposalDataRows() {
+  var masterSheetId = getMasterStatusSheetId();
+  if (!masterSheetId) {
+    throw new Error('MASTER_STATUS_SHEET_ID not configured. Run initializeSheetIds() first.');
+  }
+
+  var spreadsheet = SpreadsheetApp.openById(masterSheetId);
+  var dataSheet = getOrCreateSheet(spreadsheet, DATA_SHEET_NAME);
+  var values = dataSheet.getDataRange().getValues();
+
+  var rows = [];
+  for (var i = 1; i < values.length; i++) { // skip header
+    var proposalId = values[i][0];
+    var jsonData = values[i][1];
+    if (!proposalId || !jsonData) continue;
+    try {
+      var obj = JSON.parse(jsonData);
+      rows.push({
+        row: i + 1,
+        proposalId: proposalId,
+        name: obj.name,
+        status: obj.status,
+        updatedAt: obj.updatedAt,
+        documentId: obj.documentId
+      });
+    } catch (e) {
+      rows.push({ row: i + 1, proposalId: proposalId, parseError: e.toString() });
+    }
+  }
+
+  Logger.log('ProposalData rows: ' + JSON.stringify(rows, null, 2));
+  return rows;
+}
+
+/**
+ * POC: read text from the first slide/page of the proposal document.
+ * If proposalId is omitted, uses the first proposal in the data sheet.
+ */
+function testReadFirstSlideText(proposalId) {
+  var proposal = testLoadProposalById(proposalId); // reuses resolver to pick first when undefined
+
+  if (!proposal || !proposal.documentId) {
+    throw new Error('No proposal document linked to this proposal.');
+  }
+
+  var text = getFirstSlideText(proposal.documentId);
+  Logger.log('=== FIRST SLIDE TEXT (truncated to 1k chars) ===');
+  Logger.log(text.substring(0, 1000));
+  return text;
+}
+
+/**
  * Runs when the document is opened (for spreadsheet-bound scripts)
  * For standalone scripts, this will be skipped automatically
  */
