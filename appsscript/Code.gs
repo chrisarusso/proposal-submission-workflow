@@ -1204,6 +1204,26 @@ function updateProposalStatus(proposalId, newStatus) {
   }
   
   var oldStatus = proposal.status;
+  var warnings = [];
+
+  // Validation: for first -> second status, require all checkboxes in first stage to be checked.
+  if (STATUS_OPTIONS && STATUS_OPTIONS.length >= 2 &&
+      oldStatus === STATUS_OPTIONS[0] && newStatus === STATUS_OPTIONS[1]) {
+    if (!proposal.documentId) {
+      throw new Error('Stage change blocked: no document linked to check stage items.');
+    }
+    var stageValidation = validateStageCheckboxesMarkdown(proposal.documentId, STATUS_OPTIONS[0], STATUS_OPTIONS[1]);
+    var checkedCount = stageValidation.checkedCount || 0;
+    var uncheckedCount = stageValidation.uncheckedCount || 0;
+    var totalCount = stageValidation.totalCount || (checkedCount + uncheckedCount);
+    if (!stageValidation.allChecked) {
+      throw new Error('Stage change blocked: ' + uncheckedCount + ' unchecked item(s) in "' + STATUS_OPTIONS[0] + '" (total: ' + totalCount + ', checked: ' + checkedCount + '). First unchecked: ' + (stageValidation.uncheckedSamples[0] || 'n/a'));
+    }
+    if (stageValidation.note) {
+      warnings.push(stageValidation.note + ' (total: ' + totalCount + ', checked: ' + checkedCount + ', unchecked: ' + uncheckedCount + ')');
+    }
+  }
+
   proposal.status = newStatus;
   // Keep stage aligned to status list (no early/mid/late mapping)
   proposal.stage = newStatus;
@@ -1215,7 +1235,6 @@ function updateProposalStatus(proposalId, newStatus) {
     newStatus: newStatus
   });
   
-  var warnings = [];
   // POC: when moving from first to second status option, read Proposal Worksheet -> stages section -> first subheader
   if (STATUS_OPTIONS && STATUS_OPTIONS.length >= 2 &&
       oldStatus === STATUS_OPTIONS[0] && newStatus === STATUS_OPTIONS[1]) {
@@ -1833,16 +1852,303 @@ function docExportPreview(docId) {
  */
 function exportDocToMarkdown(docId) {
   docId = docId || '1wtw4-b35uY-YETqO1tbYY5Kej40amyVXmQ6CeEoxUsk';
-  var url = 'https://docs.google.com/feeds/download/documents/export/Export?exportFormat=markdown&id=' + docId;
+  var token = ScriptApp.getOAuthToken();
+
+  // Attempt 1: Drive v3 export to markdown (newer support)
+  var urlDrive = 'https://www.googleapis.com/drive/v3/files/' + docId + '/export?mimeType=text/markdown&supportsAllDrives=true';
+  try {
+    var resp1 = UrlFetchApp.fetch(urlDrive, {
+      headers: { Authorization: 'Bearer ' + token },
+      muteHttpExceptions: true
+    });
+    var status1 = resp1.getResponseCode();
+    var md1 = resp1.getContentText();
+    Logger.log('[exportDocToMarkdown] drive export status=%s', status1);
+    if (status1 === 200) {
+      Logger.log('[exportDocToMarkdown] full markdown (drive):\n%s', md1 || '');
+      return { status: status1, markdown: md1 };
+    } else {
+      Logger.log('[exportDocToMarkdown] drive export error (truncated): %s', md1 ? md1.substring(0, 500) : 'no body');
+    }
+  } catch (e1) {
+    Logger.log('[exportDocToMarkdown] drive export exception: %s', e1.toString());
+  }
+
+  // Attempt 2: Legacy export endpoint
+  var urlLegacy = 'https://docs.google.com/feeds/download/documents/export/Export?exportFormat=markdown&id=' + docId + '&supportsAllDrives=true';
+  var resp2 = UrlFetchApp.fetch(urlLegacy, {
+    headers: { Authorization: 'Bearer ' + token },
+    muteHttpExceptions: true
+  });
+  var status2 = resp2.getResponseCode();
+  var md2 = resp2.getContentText();
+  Logger.log('[exportDocToMarkdown] legacy export status=%s', status2);
+  if (status2 !== 200) {
+    Logger.log('[exportDocToMarkdown] legacy export error (truncated): %s', md2 ? md2.substring(0, 500) : 'no body');
+    return { status: status2, markdown: null, error: md2 ? md2.substring(0, 500) : 'export failed' };
+  }
+  Logger.log('[exportDocToMarkdown] full markdown (legacy):\n%s', md2 || '');
+  return { status: status2, markdown: md2 };
+}
+
+/**
+ * Validate that all checkboxes under the current stage heading (until next stage heading) are checked.
+ * Parses Markdown export of the document.
+ */
+function validateStageCheckboxesMarkdown(docId, stageName, nextStageName) {
+  // Try markdown export first
+  var mdRes = exportDocToMarkdown(docId);
+  if (mdRes.status === 200 && mdRes.markdown) {
+    var md = mdRes.markdown || '';
+    var parsed = parseCheckboxesBetweenStages(md, stageName, nextStageName);
+    return {
+      allChecked: parsed.unchecked.length === 0,
+      uncheckedCount: parsed.unchecked.length,
+      checkedCount: parsed.checkedCount,
+      totalCount: parsed.totalCount,
+      uncheckedSamples: parsed.unchecked.slice(0, 3),
+      note: parsed.note
+    };
+  }
+  Logger.log('[validateStageCheckboxesMarkdown] markdown export failed status=%s error=%s; falling back to plain text checkbox scan', mdRes.status, mdRes.error);
+
+  // Fallback: plain text export and look for unicode checkboxes
+  var txtRes = exportDocToPlainText(docId);
+  if (txtRes.status !== 200 || !txtRes.text) {
+    throw new Error('Markdown export failed with status ' + mdRes.status + '. Plain text fallback also failed with status ' + txtRes.status + (txtRes.error ? (': ' + txtRes.error) : ''));
+  }
+  var parsedTxt = parseCheckboxesBetweenStagesText(txtRes.text, stageName, nextStageName);
+  return {
+    allChecked: parsedTxt.unchecked.length === 0,
+    uncheckedCount: parsedTxt.unchecked.length,
+    checkedCount: parsedTxt.checkedCount,
+    totalCount: parsedTxt.totalCount,
+    uncheckedSamples: parsedTxt.unchecked.slice(0, 3),
+    note: parsedTxt.note || 'Used plain text fallback (unicode checkboxes).'
+  };
+}
+
+function parseCheckboxesBetweenStages(md, stageName, nextStageName) {
+  var lines = md.split(/\r?\n/);
+  var startIdx = -1;
+  var endIdx = lines.length;
+  var headingRegex = function(name) {
+    return new RegExp('^#{1,6}\\s*' + escapeRegex(name) + '\\s*$', 'i');
+  };
+  var startRe = headingRegex(stageName);
+  var endRe = nextStageName ? headingRegex(nextStageName) : null;
+
+  for (var i = 0; i < lines.length; i++) {
+    if (startRe.test(lines[i])) {
+      startIdx = i + 1;
+      break;
+    }
+  }
+  if (startIdx === -1) {
+    return { unchecked: [], note: 'Stage heading "' + stageName + '" not found in markdown.' };
+  }
+  if (endRe) {
+    for (var j = startIdx; j < lines.length; j++) {
+      if (endRe.test(lines[j])) {
+        endIdx = j;
+        break;
+      }
+    }
+  }
+
+  var unchecked = [];
+  var checkedCount = 0;
+  var uncheckedCount = 0;
+  // Accept bullet or numbered checklist lines: "- [ ]", "* [ ]", "1. [ ]"
+  var checkboxRe = /^\s*(?:[-*+]|[0-9]+\.)\s*\[\s*([xX ])\s*\]\s*(.*)$/;
+  for (var k = startIdx; k < endIdx; k++) {
+    var m = lines[k].match(checkboxRe);
+    if (m) {
+      var isChecked = m[1].toLowerCase() === 'x';
+      if (!isChecked) {
+        unchecked.push(m[2].trim());
+        uncheckedCount++;
+      } else {
+        checkedCount++;
+      }
+    }
+  }
+  return { unchecked: unchecked, note: null, checkedCount: checkedCount, totalCount: checkedCount + uncheckedCount };
+}
+
+function escapeRegex(s) {
+  if (!s) return '';
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// --- Fallback helpers for plain text checkbox parsing ---
+function exportDocToPlainText(docId) {
+  var token = ScriptApp.getOAuthToken();
+  var urlTxt = 'https://www.googleapis.com/drive/v3/files/' + docId + '/export?mimeType=text/plain&supportsAllDrives=true';
+  try {
+    var resp = UrlFetchApp.fetch(urlTxt, {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + token },
+      muteHttpExceptions: true
+    });
+    var status = resp.getResponseCode();
+    var txt = resp.getContentText();
+    Logger.log('[exportDocToPlainText] status=%s', status);
+    if (status !== 200) {
+      Logger.log('[exportDocToPlainText] error (truncated): %s', txt ? txt.substring(0, 400) : 'no body');
+      return { status: status, text: null, error: txt ? txt.substring(0, 400) : 'export failed' };
+    }
+    return { status: status, text: txt };
+  } catch (e) {
+    Logger.log('[exportDocToPlainText] exception: %s', e.toString());
+    return { status: 500, text: null, error: e.toString() };
+  }
+}
+
+function parseCheckboxesBetweenStagesText(text, stageName, nextStageName) {
+  var lines = text.split(/\r?\n/);
+  var startIdx = -1;
+  var endIdx = lines.length;
+  var startRe = new RegExp('^\\s*' + escapeRegex(stageName) + '\\s*$', 'i');
+  var endRe = nextStageName ? new RegExp('^\\s*' + escapeRegex(nextStageName) + '\\s*$', 'i') : null;
+
+  for (var i = 0; i < lines.length; i++) {
+    if (startRe.test(lines[i])) {
+      startIdx = i + 1;
+      break;
+    }
+  }
+  if (startIdx === -1) {
+    return { unchecked: [], note: 'Stage heading "' + stageName + '" not found in plain text.' };
+  }
+  if (endRe) {
+    for (var j = startIdx; j < lines.length; j++) {
+      if (endRe.test(lines[j])) {
+        endIdx = j;
+        break;
+      }
+    }
+  }
+
+  var unchecked = [];
+  var checkedCount = 0;
+  var uncheckedCount = 0;
+  var checkedBoxes = /[☑☒]/;
+  var uncheckedBoxes = /☐/;
+  for (var k = startIdx; k < endIdx; k++) {
+    var line = lines[k];
+    if (checkedBoxes.test(line) || uncheckedBoxes.test(line)) {
+      if (uncheckedBoxes.test(line) && !checkedBoxes.test(line)) {
+        unchecked.push(line.trim());
+        uncheckedCount++;
+      } else if (checkedBoxes.test(line)) {
+        checkedCount++;
+      }
+    }
+  }
+  return { unchecked: unchecked, note: null, checkedCount: checkedCount, totalCount: checkedCount + uncheckedCount };
+}
+
+/**
+ * Export full plain text for a Doc (no truncation).
+ */
+function docPlainTextFull(docId) {
+  docId = docId || '1wtw4-b35uY-YETqO1tbYY5Kej40amyVXmQ6CeEoxUsk';
+  var txtRes = exportDocToPlainText(docId);
+  Logger.log('[docPlainTextFull] status=%s length=%s', txtRes.status, txtRes.text ? txtRes.text.length : 0);
+  if (txtRes.status === 200 && txtRes.text) {
+    Logger.log('[docPlainTextFull] full text:\n%s', txtRes.text);
+  } else if (txtRes.error) {
+    Logger.log('[docPlainTextFull] error: %s', txtRes.error);
+  }
+  return txtRes;
+}
+
+/**
+ * Get all content between two stage headings (plain text export).
+ */
+function getStageSectionPlain(docId, stageName, nextStageName) {
+  docId = docId || '1wtw4-b35uY-YETqO1tbYY5Kej40amyVXmQ6CeEoxUsk';
+  if (!stageName) {
+    var msgMissing = 'Stage heading is required.';
+    Logger.log('[getStageSectionPlain] %s', msgMissing);
+    return { status: 400, section: null, error: msgMissing };
+  }
+  var txtRes = exportDocToPlainText(docId);
+  if (txtRes.status !== 200 || !txtRes.text) {
+    Logger.log('[getStageSectionPlain] text export failed status=%s error=%s', txtRes.status, txtRes.error);
+    return { status: txtRes.status, section: null, error: txtRes.error || 'text export failed' };
+  }
+  var lines = txtRes.text.split(/\r?\n/);
+  var startIdx = -1;
+  var endIdx = lines.length;
+  var startRe = new RegExp('^\\s*' + escapeRegex(stageName) + '\\s*$', 'i');
+  var endRe = nextStageName ? new RegExp('^\\s*' + escapeRegex(nextStageName) + '\\s*$', 'i') : null;
+
+  for (var i = 0; i < lines.length; i++) {
+    if (startRe.test(lines[i])) {
+      startIdx = i + 1;
+      break;
+    }
+  }
+  if (startIdx === -1) {
+    var msg = 'Stage heading "' + stageName + '" not found.';
+    Logger.log('[getStageSectionPlain] %s', msg);
+    return { status: 200, section: null, error: msg };
+  }
+  if (endRe) {
+    for (var j = startIdx; j < lines.length; j++) {
+      if (endRe.test(lines[j])) {
+        endIdx = j;
+        break;
+      }
+    }
+  }
+
+  var section = lines.slice(startIdx, endIdx).join('\n');
+  Logger.log('[getStageSectionPlain] section length=%s\n%s', section.length, section);
+  return { status: 200, section: section };
+}
+
+/**
+ * Export a Doc to Markdown and save as a .md file in Drive.
+ */
+function saveDocAsMarkdown(docId) {
+  if (!docId) throw new Error('docId required');
+  var name = DriveApp.getFileById(docId).getName() + '.md';
+  var token = ScriptApp.getOAuthToken();
+
+  // Attempt 1: Drive v3 markdown export
+  var url = 'https://www.googleapis.com/drive/v3/files/' + docId +
+            '/export?mimeType=text/markdown&supportsAllDrives=true';
   var resp = UrlFetchApp.fetch(url, {
-    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    headers: { Authorization: 'Bearer ' + token },
     muteHttpExceptions: true
   });
   var status = resp.getResponseCode();
   var md = resp.getContentText();
-  Logger.log('[exportDocToMarkdown] status=%s', status);
-  Logger.log('[exportDocToMarkdown] full markdown:\n%s', md || '');
-  return { status: status, markdown: md };
+  Logger.log('[saveDocAsMarkdown] drive export status=%s', status);
+
+  // Fallback: legacy export
+  if (status !== 200) {
+    url = 'https://docs.google.com/feeds/download/documents/export/Export?exportFormat=markdown&id=' + docId + '&supportsAllDrives=true';
+    resp = UrlFetchApp.fetch(url, {
+      headers: { Authorization: 'Bearer ' + token },
+      muteHttpExceptions: true
+    });
+    status = resp.getResponseCode();
+    md = resp.getContentText();
+    Logger.log('[saveDocAsMarkdown] legacy export status=%s', status);
+  }
+
+  if (status !== 200) {
+    Logger.log('[saveDocAsMarkdown] export error (truncated): %s', md ? md.substring(0, 400) : 'no body');
+    throw new Error('Markdown export failed, status ' + status + ': ' + (md ? md.substring(0, 400) : 'no body'));
+  }
+
+  var file = DriveApp.createFile(name, md, MimeType.PLAIN_TEXT);
+  Logger.log('[saveDocAsMarkdown] saved markdown as: %s (length=%s)', file.getName(), md.length);
+  return { status: status, length: md.length, name: file.getName(), fileId: file.getId() };
 }
 
 /**
