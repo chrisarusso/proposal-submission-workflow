@@ -276,6 +276,7 @@
       <button class="btn btn-success" onclick="runValidation()">Validate Before Submission</button>
       <button class="btn" onclick="runChecks()">Run Automated Checks</button>
       <button class="btn" onclick="saveProposal()">Save Changes</button>
+      <button class="btn btn-secondary" onclick="countThe()">Count \"the\"</button>
     </div>
   </div>
   
@@ -550,6 +551,23 @@
         })
         .withFailureHandler(showError)
         .runStageBasedChecks(proposalId, proposal.stage);
+    }
+    
+    function countThe() {
+      if (!proposal) {
+        alert('Proposal not loaded yet');
+        return;
+      }
+      google.script.run
+        .withSuccessHandler(function(res) {
+          if (res && res.success) {
+            alert('Found ' + res.count + ' occurrence(s) of "the"');
+          } else {
+            alert('Count failed: ' + (res ? res.message : 'unknown error'));
+          }
+        })
+        .withFailureHandler(showError)
+        .countTheOccurrences(proposal.id);
     }
     
     function runValidation() {

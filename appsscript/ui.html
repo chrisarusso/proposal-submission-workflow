@@ -436,6 +436,7 @@
               '<td><div class="actions">' +
                 '<button class="btn btn-secondary" onclick="viewProposal(\'' + (proposal.id || '') + '\')">View</button>' +
                 '<button class="btn" onclick="editProposal(\'' + (proposal.id || '') + '\')">Edit</button>' +
+                '<button class="btn btn-secondary" onclick="countTheFromDashboard(\'' + (proposal.id || '') + '\')">Count \"the\"</button>' +
               '</div></td>';
             tbodyEl.appendChild(row);
             console.log('Row added successfully');
@@ -522,9 +523,23 @@
       try {
         google.script.run
           .withSuccessHandler(function(baseUrl) {
-            var url = baseUrl + '?proposalId=' + encodeURIComponent(proposalId);
-            console.log('Opening proposal detail:', url);
-            window.open(url, '_blank');
+            try {
+              // Normalize base URL (remove query/hash if present)
+              var clean = (baseUrl || '').split('#')[0];
+              clean = clean.split('?')[0];
+              // If we somehow got the userCodeAppPanel URL, fall back to current path
+              if (!clean || clean.indexOf('/exec') === -1) {
+                clean = window.location.origin + window.location.pathname;
+              }
+              var sep = clean.indexOf('?') === -1 ? '?' : '&';
+              var url = clean + sep + 'proposalId=' + encodeURIComponent(proposalId);
+              console.log('Opening proposal detail:', url);
+              window.open(url, '_blank');
+            } catch (inner) {
+              console.error('Error building URL from baseUrl:', baseUrl, inner);
+              var fb = window.location.origin + window.location.pathname + '?proposalId=' + encodeURIComponent(proposalId);
+              window.open(fb, '_blank');
+            }
           })
           .withFailureHandler(function(err) {
             console.error('Failed to get web app URL, falling back to current origin/path:', err);
@@ -541,6 +556,23 @@
     
     function editProposal(proposalId) {
       viewProposal(proposalId);
+    }
+    
+    function countTheFromDashboard(proposalId) {
+      if (!proposalId) {
+        alert('No proposal ID');
+        return;
+      }
+      google.script.run
+        .withSuccessHandler(function(res) {
+          if (res && res.success) {
+            alert('Found ' + res.count + ' occurrence(s) of \"the\"');
+          } else {
+            alert('Count failed: ' + (res ? res.message : 'unknown error'));
+          }
+        })
+        .withFailureHandler(showError)
+        .countTheOccurrences(proposalId);
     }
     
     function formatDate(dateString) {

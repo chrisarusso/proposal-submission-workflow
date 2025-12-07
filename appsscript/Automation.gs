@@ -412,6 +412,53 @@ function runStringMatchCheck(documentId, requiredStrings) {
 }
 
 /**
+ * Count occurrences of a word (case-insensitive, whole word) in a Doc/Slides document
+ * @param {string} documentId
+ * @param {string} word
+ * @return {object} { success, count, message }
+ */
+function countWordOccurrences(documentId, word) {
+  if (!documentId) {
+    return {
+      success: false,
+      message: 'Document not linked to proposal'
+    };
+  }
+  if (!word) {
+    return {
+      success: false,
+      message: 'No word provided'
+    };
+  }
+  try {
+    var text = extractTextFromDocument(documentId);
+    if (!text) {
+      return {
+        success: false,
+        message: 'No text extracted from document'
+      };
+    }
+    // Escape regex special chars
+    var escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    var regex = new RegExp('\\b' + escaped + '\\b', 'gi');
+    var matches = text.match(regex);
+    var count = matches ? matches.length : 0;
+    return {
+      success: true,
+      word: word,
+      count: count,
+      message: 'Found ' + count + ' occurrence(s) of "' + word + '"'
+    };
+  } catch (e) {
+    Logger.log('Error counting word occurrences: ' + e.toString());
+    return {
+      success: false,
+      message: 'Error counting word occurrences: ' + e.toString()
+    };
+  }
+}
+
+/**
  * Execute custom analysis script
  * @param {string} scriptName - Name of script to run
  * @param {object} proposalData - Proposal data

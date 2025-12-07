@@ -295,6 +295,28 @@ function getRequiredStrings(proposalId) {
 }
 
 /**
+ * Count occurrences of the word "the" in the proposal document
+ * (uses Slides or Docs via extractTextFromDocument)
+ */
+function countTheOccurrences(proposalId) {
+  var proposal = getProposalData(proposalId);
+  if (!proposal) {
+    throw new Error('Proposal not found: ' + proposalId);
+  }
+  if (!proposal.documentId) {
+    throw new Error('Proposal document not linked');
+  }
+  var result = countWordOccurrences(proposal.documentId, 'the');
+  logAction('WORD_COUNT', proposalId, {
+    word: 'the',
+    count: result.count || 0,
+    success: result.success,
+    message: result.message
+  });
+  return result;
+}
+
+/**
  * Initialize new proposal with default checklist
  */
 function createProposal(proposalData) {
