@@ -1216,23 +1216,20 @@ function updateProposalStatus(proposalId, newStatus) {
   });
   
   var warnings = [];
-  // POC: when moving from first to second status option, run swear check on first page
+  // POC: when moving from first to second status option, read Proposal Worksheet -> stages section -> first subheader
   if (STATUS_OPTIONS && STATUS_OPTIONS.length >= 2 &&
       oldStatus === STATUS_OPTIONS[0] && newStatus === STATUS_OPTIONS[1]) {
     try {
-      Logger.log('[updateProposalStatus] running swear check; docId=%s', proposal.documentId || 'none');
-      if (!proposal.documentId) {
-        warnings.push('No document linked; cannot scan for flagged words.');
-      } else {
-        var scan = checkForSwears(proposal.documentId);
-        Logger.log('[updateProposalStatus] swear check result found=%s matches=%s', scan && scan.found, scan && scan.matches ? scan.matches.join(',') : '');
-        if (scan && scan.found && scan.matches && scan.matches.length > 0) {
-          warnings.push('Flagged words detected: ' + scan.matches.join(', '));
-        }
+      var worksheetResult = getProposalWorksheetFirstStage();
+      if (worksheetResult.warning) {
+        warnings.push(worksheetResult.warning);
+      }
+      if (worksheetResult.firstStageTitle) {
+        warnings.push('Proposal Worksheet stage: ' + worksheetResult.firstStageTitle);
       }
     } catch (e) {
-      warnings.push('Swear check failed: ' + e.toString());
-      Logger.log('[updateProposalStatus] swear check exception: ' + e.toString());
+      warnings.push('Proposal Worksheet check failed: ' + e.toString());
+      Logger.log('[updateProposalStatus] worksheet check exception: ' + e.toString());
     }
   }
   Logger.log('[updateProposalStatus] end id=%s old=%s new=%s warnings=%s', proposalId, oldStatus, newStatus, warnings.join('; '));
@@ -1250,29 +1247,651 @@ function getStatusOptions() {
 }
 
 /**
- * Simple profanity checker on first page/slide of a document.
+ * Count suggested checkbox changes in a Doc (suggestion mode).
+ * Defaults to the provided example doc ID if none is passed.
  */
-function checkForSwears(documentId) {
-  var flagged = ['fuck', 'shit', 'bitch', 'asshole', 'damn'];
-  var text = '';
-  try {
-    text = getFirstSlideText(documentId);
-  } catch (e) {
-    Logger.log('checkForSwears: getFirstSlideText failed ' + e.toString());
-    throw e;
-  }
-  var lower = (text || '').toLowerCase();
-  var matches = [];
-  flagged.forEach(function(word) {
-    if (lower.indexOf(word) !== -1) {
-      matches.push(word);
+function countSuggestedCheckboxes(docId) {
+  docId = docId || '1wtw4-b35uY-YETqO1tbYY5Kej40amyVXmQ6CeEoxUsk';
+
+  var url = 'https://docs.googleapis.com/v1/documents/' + docId +
+            '?suggestionsViewMode=PREVIEW_WITH_SUGGESTIONS';
+
+  var resp = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
+
+  var doc = JSON.parse(resp.getContentText());
+  var suggested = doc.suggestedCheckboxChanges || {};
+  var total = 0, suggestedChecked = 0;
+
+  Object.keys(suggested).forEach(function(key) {
+    total++;
+    var change = suggested[key];
+    if (change &&
+        change.checkboxSuggestionState &&
+        change.checkboxSuggestionState.suggestedValue &&
+        change.checkboxSuggestionState.suggestedValue.checked === true) {
+      suggestedChecked++;
     }
   });
-  Logger.log('checkForSwears: found=%s matches=%s', matches.length > 0, matches.join(','));
-  return {
-    found: matches.length > 0,
-    matches: matches
+
+  // Extra debug: log keys and presence
+  Logger.log('[countSuggestedCheckboxes] docId=%s suggestedKeys=%s', docId, Object.keys(suggested).join(','));
+  Logger.log('[countSuggestedCheckboxes] hasSuggestionsField=%s', !!doc.suggestionsViewMode);
+  Logger.log('[countSuggestedCheckboxes] bodyElements=%s', doc.body && doc.body.content ? doc.body.content.length : 0);
+
+  var result = {
+    totalSuggestedCheckboxChanges: total,
+    suggestedChecked: suggestedChecked,
+    suggestedUnchecked: total - suggestedChecked
   };
+  Logger.log(JSON.stringify(result, null, 2));
+
+  // If zero, try inline suggestions mode as fallback
+  if (total === 0) {
+    var urlInline = 'https://docs.googleapis.com/v1/documents/' + docId +
+      '?suggestionsViewMode=SUGGESTIONS_INLINE';
+    var resp2 = UrlFetchApp.fetch(urlInline, {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    var doc2 = JSON.parse(resp2.getContentText());
+    var suggested2 = doc2.suggestedCheckboxChanges || {};
+    var total2 = Object.keys(suggested2).length;
+    Logger.log('[countSuggestedCheckboxes] inline fallback keys=%s', Object.keys(suggested2).join(','));
+    if (total2 > 0) {
+      var suggestedChecked2 = 0;
+      Object.keys(suggested2).forEach(function(key) {
+        var change = suggested2[key];
+        if (change &&
+            change.checkboxSuggestionState &&
+            change.checkboxSuggestionState.suggestedValue &&
+            change.checkboxSuggestionState.suggestedValue.checked === true) {
+          suggestedChecked2++;
+        }
+      });
+      var result2 = {
+        totalSuggestedCheckboxChanges: total2,
+        suggestedChecked: suggestedChecked2,
+        suggestedUnchecked: total2 - suggestedChecked2,
+        viewMode: 'SUGGESTIONS_INLINE'
+      };
+      Logger.log(JSON.stringify(result2, null, 2));
+      return result2;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Debug: fetch doc title/body length and suggestion fields to verify access.
+ */
+function docInfoDebug(docId) {
+  docId = docId || '1wtw4-b35uY-YETqO1tbYY5Kej40amyVXmQ6CeEoxUsk';
+  var info = {};
+  try {
+    var f = DriveApp.getFileById(docId);
+    info.driveTitle = f.getName();
+  } catch (e) {
+    info.driveError = e.toString();
+  }
+  try {
+    var d = DocumentApp.openById(docId);
+    info.docTitle = d.getName();
+    var body = d.getBody();
+    info.paragraphs = body ? body.getNumChildren() : 0;
+  } catch (e2) {
+    info.docError = e2.toString();
+  }
+  try {
+    var url = 'https://docs.googleapis.com/v1/documents/' + docId + '?suggestionsViewMode=PREVIEW_WITH_SUGGESTIONS';
+    var resp = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    var doc = JSON.parse(resp.getContentText());
+    info.restStatus = resp.getResponseCode();
+    info.suggestedKeys = doc.suggestedCheckboxChanges ? Object.keys(doc.suggestedCheckboxChanges).length : 0;
+    info.bodyElements = doc.body && doc.body.content ? doc.body.content.length : 0;
+  } catch (e3) {
+    info.restError = e3.toString();
+  }
+  Logger.log(JSON.stringify(info, null, 2));
+  return info;
+}
+
+/**
+ * Inspect checklist (bullet) suggestion changes: uses suggestedBulletChanges / suggestedListPropertiesChanges.
+ */
+function countSuggestedChecklistChanges(docId) {
+  docId = docId || '1wtw4-b35uY-YETqO1tbYY5Kej40amyVXmQ6CeEoxUsk';
+  var viewModes = ['PREVIEW_WITH_SUGGESTIONS', 'SUGGESTIONS_INLINE'];
+  var results = [];
+
+  viewModes.forEach(function(mode) {
+    var url = 'https://docs.googleapis.com/v1/documents/' + docId +
+      '?suggestionsViewMode=' + mode;
+    var resp = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    var status = resp.getResponseCode();
+    var doc = JSON.parse(resp.getContentText());
+    var sbc = doc.suggestedBulletChanges || {};
+    var slpc = doc.suggestedListPropertiesChanges || {};
+    var totalBullets = Object.keys(sbc).length;
+    var totalListProps = Object.keys(slpc).length;
+
+    Logger.log('[countSuggestedChecklistChanges] mode=%s status=%s sbcKeys=%s slpcKeys=%s bodyElements=%s',
+      mode,
+      status,
+      Object.keys(sbc).join(','),
+      Object.keys(slpc).join(','),
+      doc.body && doc.body.content ? doc.body.content.length : 0
+    );
+
+    // Attempt to count "checked" suggestions from list property changes where glyphType is CHECKBOX.
+    var checkedCount = 0;
+    Object.keys(slpc).forEach(function(key) {
+      var change = slpc[key];
+      if (change && change.listPropertiesSuggestionState && change.listPropertiesSuggestionState.glyphType) {
+        // If suggestedValue glyphType exists and is a checkbox variant, count it.
+        if (change.listPropertiesSuggestionState.glyphType.suggestedValue &&
+            change.listPropertiesSuggestionState.glyphType.suggestedValue.indexOf('CHECKBOX') !== -1) {
+          checkedCount++;
+        }
+      }
+    });
+
+    results.push({
+      mode: mode,
+      status: status,
+      suggestedBulletChanges: totalBullets,
+      suggestedListPropertiesChanges: totalListProps,
+      inferredCheckedSuggestions: checkedCount
+    });
+  });
+
+  Logger.log(JSON.stringify(results, null, 2));
+  return results;
+}
+
+/**
+ * Count any suggestions in a Doc and report totals and breakdown.
+ * Defaults to the example doc if none provided.
+ */
+function countDocSuggestions(docId) {
+  docId = docId || '1wtw4-b35uY-YETqO1tbYY5Kej40amyVXmQ6CeEoxUsk';
+  var suggestionFields = [
+    'suggestedBulletChanges',
+    'suggestedListPropertiesChanges',
+    'suggestedParagraphStyleChanges',
+    'suggestedTextStyleChanges',
+    'suggestedNamedStylesChanges',
+    'suggestedInlineObjectPropertiesChanges',
+    'suggestedPositionedObjectPropertiesChanges',
+    'suggestedDocumentStyleChanges',
+    'suggestedTableCellStyleChanges',
+    'suggestedTableRowStyleChanges',
+    'suggestedTableStyleChanges',
+    'suggestedNamedRangesChanges',
+    'suggestedFootnoteStyleChanges'
+  ];
+
+  var modes = ['PREVIEW_WITH_SUGGESTIONS', 'SUGGESTIONS_INLINE'];
+  var bestResult = null;
+
+  modes.forEach(function(mode) {
+    var url = 'https://docs.googleapis.com/v1/documents/' + docId + '?suggestionsViewMode=' + mode;
+    var resp = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    var status = resp.getResponseCode();
+    var doc = JSON.parse(resp.getContentText());
+    var breakdown = {};
+    var total = 0;
+    suggestionFields.forEach(function(field) {
+      var obj = doc[field] || {};
+      var count = Object.keys(obj).length;
+      breakdown[field] = count;
+      total += count;
+    });
+
+    var result = {
+      mode: mode,
+      status: status,
+      totalSuggestions: total,
+      breakdown: breakdown,
+      bodyElements: doc.body && doc.body.content ? doc.body.content.length : 0
+    };
+    Logger.log('[countDocSuggestions] mode=%s status=%s total=%s bodyElems=%s', mode, status, total, result.bodyElements);
+    if (!bestResult || result.totalSuggestions > bestResult.totalSuggestions) {
+      bestResult = result;
+    }
+  });
+
+  Logger.log(JSON.stringify(bestResult || {}, null, 2));
+  return bestResult;
+}
+
+/**
+ * Debug: log body preview and REST response snippet to prove content access.
+ */
+function docContentDebug() {
+  var docId = '1wtw4-b35uY-YETqO1tbYY5Kej40amyVXmQ6CeEoxUsk';
+  var info = {};
+
+  // Read body text via DocumentApp
+  try {
+    var doc = DocumentApp.openById(docId);
+    var text = doc.getBody().getText();
+    info.bodyPreview = text ? text.substring(0, 500) : '';
+    info.bodyLength = text ? text.length : 0;
+  } catch (e) {
+    info.docError = e.toString();
+  }
+
+  // Plain Docs REST fetch (no suggestionsViewMode) to inspect response
+  try {
+    var url = 'https://docs.googleapis.com/v1/documents/' + docId;
+    var resp = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    info.restStatus = resp.getResponseCode();
+    info.restSnippet = resp.getContentText().substring(0, 500);
+  } catch (e2) {
+    info.restError = e2.toString();
+  }
+
+  Logger.log(JSON.stringify(info, null, 2));
+  return info;
+}
+
+/**
+ * Inspect suggested strikethrough changes in a Doc.
+ * Checks suggestedTextStyleChanges for strikethrough suggestedValue.
+ */
+function countSuggestedStrikethroughs(docId) {
+  docId = docId || '1wtw4-b35uY-YETqO1tbYY5Kej40amyVXmQ6CeEoxUsk';
+  var mode = 'SUGGESTIONS_INLINE'; // PREVIEW_WITH_SUGGESTIONS is invalid per API error
+  var url = 'https://docs.googleapis.com/v1/documents/' + docId + '?suggestionsViewMode=' + mode;
+  var resp = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
+  var status = resp.getResponseCode();
+  var raw = resp.getContentText();
+  var doc = JSON.parse(resp.getContentText());
+  var sts = doc.suggestedTextStyleChanges || {};
+  var total = Object.keys(sts).length;
+  var suggestedStrike = 0;
+
+  Object.keys(sts).forEach(function(key) {
+    var change = sts[key];
+    if (change &&
+        change.textStyleSuggestionState &&
+        change.textStyleSuggestionState.strikethrough &&
+        change.textStyleSuggestionState.strikethrough.suggestedValue === true) {
+      suggestedStrike++;
+    }
+  });
+
+  Logger.log('[countSuggestedStrikethroughs] mode=%s status=%s totalTextStyleSuggestions=%s suggestedStrike=%s bodyElems=%s',
+    mode,
+    status,
+    total,
+    suggestedStrike,
+    doc.body && doc.body.content ? doc.body.content.length : 0
+  );
+  if (status !== 200) {
+    Logger.log('[countSuggestedStrikethroughs] raw response (truncated): %s', raw ? raw.substring(0, 400) : 'no body');
+  }
+
+  var result = {
+    mode: mode,
+    status: status,
+    totalTextStyleSuggestions: total,
+    suggestedStrikethrough: suggestedStrike
+  };
+  Logger.log(JSON.stringify(result || {}, null, 2));
+  return result;
+}
+
+/**
+ * Inspect a Doc for current formatting and structure.
+ * - Counts current strikethrough runs, bold, italics.
+ * - Counts checkboxes via unicode characters in plain text export.
+ * - Emits a body preview and element counts.
+ */
+function docFormatAudit(docId) {
+  docId = docId || '1wtw4-b35uY-YETqO1tbYY5Kej40amyVXmQ6CeEoxUsk';
+  var audit = {
+    docId: docId,
+    bodyPreview: '',
+    bodyLength: 0,
+    paragraphs: 0,
+    strikethroughRuns: 0,
+    boldRuns: 0,
+    italicRuns: 0,
+    checkboxChecked: 0,
+    checkboxUnchecked: 0
+  };
+
+  try {
+    var doc = DocumentApp.openById(docId);
+    var body = doc.getBody();
+    var text = body ? body.getText() : '';
+    audit.bodyPreview = text ? text.substring(0, 500) : '';
+    audit.bodyLength = text ? text.length : 0;
+    audit.paragraphs = body ? body.getNumChildren() : 0;
+
+    // Inspect text runs for formatting
+    if (body) {
+      var numChildren = body.getNumChildren();
+      for (var i = 0; i < numChildren; i++) {
+        var el = body.getChild(i);
+        if (el.getType && el.getType() === DocumentApp.ElementType.PARAGRAPH) {
+          var para = el.asParagraph();
+          var textEl = para.editAsText();
+          if (!textEl) continue;
+          var len = textEl.getText().length;
+          for (var j = 0; j < len; j++) {
+            if (textEl.isStrikethrough(j)) audit.strikethroughRuns++;
+            if (textEl.isBold(j)) audit.boldRuns++;
+            if (textEl.isItalic(j)) audit.italicRuns++;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    audit.docError = e.toString();
+  }
+
+  // Try plain text export to count unicode checkboxes
+  try {
+    var urlTxt = 'https://www.googleapis.com/drive/v3/files/' + docId + '/export?mimeType=text/plain';
+    var respTxt = UrlFetchApp.fetch(urlTxt, {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    if (respTxt.getResponseCode() === 200) {
+      var t = respTxt.getContentText();
+      var uncheckedMatches = t.match(/☐/g);
+      var checkedMatches = t.match(/☑|☒/g);
+      audit.checkboxUnchecked = uncheckedMatches ? uncheckedMatches.length : 0;
+      audit.checkboxChecked = checkedMatches ? checkedMatches.length : 0;
+    } else {
+      audit.textExportStatus = respTxt.getResponseCode();
+      audit.textExportBody = respTxt.getContentText().substring(0, 400);
+    }
+  } catch (e2) {
+    audit.textExportError = e2.toString();
+  }
+
+  Logger.log(JSON.stringify(audit, null, 2));
+  return audit;
+}
+
+/**
+ * Inspect current strikethrough text and suggested insert/delete IDs.
+ * - Collects struck text snippets (current formatting).
+ * - Counts unique suggestedDeletionIds / suggestedInsertionIds from the REST body.
+ */
+function analyzeSuggestionsAndStrikes(docId) {
+  docId = docId || '1wtw4-b35uY-YETqO1tbYY5Kej40amyVXmQ6CeEoxUsk';
+  var result = {
+    docId: docId,
+    strikethroughTexts: [],
+    suggestedDeletionIds: 0,
+    suggestedInsertionIds: 0,
+    restStatus: null
+  };
+
+  // Collect current strikethrough text via DocumentApp
+  try {
+    var doc = DocumentApp.openById(docId);
+    var body = doc.getBody();
+    if (body) {
+      var numChildren = body.getNumChildren();
+      for (var i = 0; i < numChildren; i++) {
+        var el = body.getChild(i);
+        if (el.getType && el.getType() === DocumentApp.ElementType.PARAGRAPH) {
+          var para = el.asParagraph();
+          var textEl = para.editAsText();
+          if (!textEl) continue;
+          var txt = textEl.getText();
+          var len = txt.length;
+          var buffer = '';
+          for (var j = 0; j < len; j++) {
+            if (textEl.isStrikethrough(j)) {
+              buffer += txt.charAt(j);
+            } else if (buffer.length) {
+              if (buffer.trim()) {
+                result.strikethroughTexts.push(buffer);
+              }
+              buffer = '';
+            }
+          }
+          if (buffer.length && buffer.trim()) {
+            result.strikethroughTexts.push(buffer);
+          }
+        }
+      }
+    }
+  } catch (e) {
+    result.docError = e.toString();
+  }
+
+  // Inspect suggested insert/delete IDs via REST (SUGGESTIONS_INLINE)
+  try {
+    var url = 'https://docs.googleapis.com/v1/documents/' + docId + '?suggestionsViewMode=SUGGESTIONS_INLINE';
+    var resp = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    result.restStatus = resp.getResponseCode();
+    var raw = resp.getContentText();
+    if (result.restStatus === 200) {
+      var docJson = JSON.parse(raw);
+      var delSet = {};
+      var insSet = {};
+      if (docJson.body && docJson.body.content) {
+        docJson.body.content.forEach(function(elem) {
+          collectSuggestionIds(elem, delSet, insSet);
+        });
+      }
+      result.suggestedDeletionIds = Object.keys(delSet).length;
+      result.suggestedInsertionIds = Object.keys(insSet).length;
+    } else {
+      result.restErrorBody = raw ? raw.substring(0, 500) : 'no body';
+    }
+  } catch (e2) {
+    result.restError = e2.toString();
+  }
+
+  Logger.log(JSON.stringify(result, null, 2));
+  return result;
+}
+
+// Helper to collect suggestion IDs from structural elements
+function collectSuggestionIds(elem, delSet, insSet) {
+  if (!elem || typeof elem !== 'object') return;
+  // Paragraph
+  if (elem.paragraph) {
+    var p = elem.paragraph;
+    addIds(p.suggestedDeletionIds, delSet);
+    addIds(p.suggestedInsertionIds, insSet);
+    if (p.elements) {
+      p.elements.forEach(function(e) {
+        if (e.textRun && e.textRun.textStyleSuggestionState) {
+          addIds(e.textRun.suggestedDeletionIds, delSet);
+          addIds(e.textRun.suggestedInsertionIds, insSet);
+        }
+      });
+    }
+  }
+  // Table
+  if (elem.table && elem.table.tableRows) {
+    elem.table.tableRows.forEach(function(row) {
+      row.tableCells.forEach(function(cell) {
+        if (cell.content) {
+          cell.content.forEach(function(c) {
+            collectSuggestionIds(c, delSet, insSet);
+          });
+        }
+      });
+    });
+  }
+  // Section/other content arrays
+  if (elem.content && Array.isArray(elem.content)) {
+    elem.content.forEach(function(c) {
+      collectSuggestionIds(c, delSet, insSet);
+    });
+  }
+}
+
+function addIds(ids, set) {
+  if (!ids) return;
+  ids.forEach(function(id) {
+    set[id] = true;
+  });
+}
+
+/**
+ * Preview exports for a Doc: DocumentApp text, Drive plain text export, Drive HTML export.
+ * No files are created; results are logged and returned.
+ */
+function docExportPreview(docId) {
+  docId = docId || '1wtw4-b35uY-YETqO1tbYY5Kej40amyVXmQ6CeEoxUsk';
+  var out = {
+    docId: docId,
+    docTextPreview: '',
+    docTextLength: 0,
+    plainStatus: null,
+    plainPreview: '',
+    htmlStatus: null,
+    htmlPreview: ''
+  };
+
+  // DocumentApp text
+  try {
+    var doc = DocumentApp.openById(docId);
+    var t = doc.getBody().getText();
+    out.docTextPreview = t ? t.substring(0, 500) : '';
+    out.docTextLength = t ? t.length : 0;
+  } catch (e) {
+    out.docError = e.toString();
+  }
+
+  // Drive plain text export
+  try {
+    var urlTxt = 'https://www.googleapis.com/drive/v3/files/' + docId + '/export?mimeType=text/plain';
+    var respTxt = UrlFetchApp.fetch(urlTxt, {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    out.plainStatus = respTxt.getResponseCode();
+    out.plainPreview = respTxt.getContentText().substring(0, 500);
+  } catch (e2) {
+    out.plainError = e2.toString();
+  }
+
+  // Drive HTML export
+  try {
+    var urlHtml = 'https://www.googleapis.com/drive/v3/files/' + docId + '/export?mimeType=text/html';
+    var respHtml = UrlFetchApp.fetch(urlHtml, {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    out.htmlStatus = respHtml.getResponseCode();
+    out.htmlPreview = respHtml.getContentText().substring(0, 500);
+  } catch (e3) {
+    out.htmlError = e3.toString();
+  }
+
+  Logger.log(JSON.stringify(out, null, 2));
+  return out;
+}
+
+/**
+ * Export a Google Doc to Markdown (string only; no file created).
+ */
+function exportDocToMarkdown(docId) {
+  docId = docId || '1wtw4-b35uY-YETqO1tbYY5Kej40amyVXmQ6CeEoxUsk';
+  var url = 'https://docs.google.com/feeds/download/documents/export/Export?exportFormat=markdown&id=' + docId;
+  var resp = UrlFetchApp.fetch(url, {
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
+  var status = resp.getResponseCode();
+  var md = resp.getContentText();
+  Logger.log('[exportDocToMarkdown] status=%s', status);
+  Logger.log('[exportDocToMarkdown] full markdown:\n%s', md || '');
+  return { status: status, markdown: md };
+}
+
+/**
+ * Find "Proposal Worksheet" doc and read first subheader under "stages" section.
+ */
+function getProposalWorksheetFirstStage() {
+  var title = 'Proposal Worksheet';
+  var docId = findDocIdByTitle(title);
+  if (!docId) {
+    return { warning: 'Proposal Worksheet not found in Drive.', firstStageTitle: null };
+  }
+  var subheader = readFirstStageSubheader(docId);
+  if (!subheader) {
+    return { warning: 'Stages section or subheader not found in Proposal Worksheet.', firstStageTitle: null };
+  }
+  return { warning: null, firstStageTitle: subheader };
+}
+
+function findDocIdByTitle(title) {
+  var q = 'title = "' + title.replace(/"/g, '\\"') + '" and mimeType = "application/vnd.google-apps.document"';
+  var it = DriveApp.searchFiles(q);
+  if (it.hasNext()) return it.next().getId();
+  // fallback contains
+  it = DriveApp.searchFiles('title contains "' + title.replace(/"/g, '\\"') + '" and mimeType = "application/vnd.google-apps.document"');
+  if (it.hasNext()) return it.next().getId();
+  return null;
+}
+
+function readFirstStageSubheader(docId) {
+  var doc = DocumentApp.openById(docId);
+  var body = doc.getBody();
+  var paras = body.getParagraphs();
+  var inStages = false;
+  for (var i = 0; i < paras.length; i++) {
+    var p = paras[i];
+    var text = (p.getText() || '').trim();
+    var heading = p.getHeading();
+    if (!inStages) {
+      if (text && text.toLowerCase() === 'stages' && heading !== DocumentApp.ParagraphHeading.NORMAL) {
+        inStages = true;
+      }
+      continue;
+    } else {
+      if (heading !== DocumentApp.ParagraphHeading.NORMAL && text) {
+        return text;
+      }
+    }
+  }
+  return null;
 }
 
 /**

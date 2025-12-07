@@ -546,9 +546,14 @@
           var selectId = 'statusSelect-' + (proposal.id || index);
           var nextSt = getNextStatus(proposal.status);
           var stageCellHtml = '<span class="status-badge ' + statusClass + '">' + escapeHtml(stageVal || 'Draft') + '</span>';
-          if (isAdmin || isAssignee) {
+          if (isAdmin) {
+            var optsAdmin = statusOrder.map(function(st) {
+              return '<option value="' + st + '"' + (st === stageVal ? ' selected' : '') + '>' + st + '</option>';
+            }).join('');
+            stageCellHtml = '<select id="' + selectId + '" class="btn" style="padding:6px 8px;" onchange="advanceProposal(\'' + (proposal.id || '') + '\', this.value)">' + optsAdmin + '</select>';
+          } else if (isAssignee) {
             var opts = '';
-            opts += '<option value="' + (proposal.status || '') + '" selected>' + (proposal.status || 'Current') + '</option>';
+            opts += '<option value="' + (stageVal || '') + '" selected>' + (stageVal || 'Current') + '</option>';
             if (nextSt) {
               opts += '<option value="' + nextSt + '">' + nextSt + '</option>';
             }
