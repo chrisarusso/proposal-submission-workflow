@@ -331,48 +331,126 @@
   </div>
   
   <script>
+    console.log('UI script loaded');
     var allProposals = [];
     var filteredProposals = [];
     
-    // Load proposals on page load
-    google.script.run
-      .withSuccessHandler(displayProposals)
-      .withFailureHandler(showError)
-      .getAllProposals();
+    // Wait for page to be fully loaded
+    window.addEventListener('load', function() {
+      console.log('Page loaded, calling getAllProposals');
+      loadProposals();
+    });
+    
+    function loadProposals() {
+      console.log('loadProposals called');
+      try {
+        google.script.run
+          .withSuccessHandler(function(proposals) {
+            console.log('Success handler called with:', proposals);
+            displayProposals(proposals);
+          })
+          .withFailureHandler(function(error) {
+            console.error('Failure handler called:', error);
+            showError(error);
+          })
+          .getAllProposals();
+      } catch (e) {
+        console.error('Error calling google.script.run:', e);
+        showError(e);
+      }
+    }
+    
+    // Also try loading immediately (fallback)
+    console.log('Attempting immediate load');
+    try {
+      google.script.run
+        .withSuccessHandler(function(proposals) {
+          console.log('Immediate load success:', proposals);
+          displayProposals(proposals);
+        })
+        .withFailureHandler(function(error) {
+          console.error('Immediate load error:', error);
+          showError(error);
+        })
+        .getAllProposals();
+    } catch (e) {
+      console.error('Immediate load exception:', e);
+    }
     
     function displayProposals(proposals) {
-      allProposals = proposals;
-      filteredProposals = proposals;
+      console.log('=== displayProposals START ===');
+      console.log('Received proposals:', proposals);
+      console.log('Type:', typeof proposals);
+      console.log('Is array:', Array.isArray(proposals));
+      console.log('Length:', proposals ? proposals.length : 'null/undefined');
       
-      document.getElementById('loading').style.display = 'none';
-      
-      if (proposals.length === 0) {
-        document.getElementById('emptyState').style.display = 'block';
-        document.getElementById('proposalsTable').style.display = 'none';
-        return;
+      try {
+        allProposals = proposals || [];
+        filteredProposals = proposals || [];
+        
+        var loadingEl = document.getElementById('loading');
+        var emptyStateEl = document.getElementById('emptyState');
+        var tableEl = document.getElementById('proposalsTable');
+        var tbodyEl = document.getElementById('proposalsBody');
+        
+        console.log('Elements found:', {
+          loading: !!loadingEl,
+          emptyState: !!emptyStateEl,
+          table: !!tableEl,
+          tbody: !!tbodyEl
+        });
+        
+        if (!loadingEl || !emptyStateEl || !tableEl || !tbodyEl) {
+          console.error('Missing required elements!');
+          alert('Error: Missing HTML elements. Check console.');
+          return;
+        }
+        
+        loadingEl.style.display = 'none';
+        
+        if (!proposals || proposals.length === 0) {
+          console.log('No proposals to display - showing empty state');
+          emptyStateEl.style.display = 'block';
+          tableEl.style.display = 'none';
+          return;
+        }
+        
+        console.log('Displaying', proposals.length, 'proposals');
+        emptyStateEl.style.display = 'none';
+        tableEl.style.display = 'table';
+        
+        tbodyEl.innerHTML = '';
+        
+        filteredProposals.forEach(function(proposal, index) {
+          try {
+            console.log('Adding proposal', index, ':', proposal.name, proposal.id);
+            var row = document.createElement('tr');
+            var statusClass = 'status-' + (proposal.status || 'draft').toLowerCase().replace(/\s+/g, '-');
+            row.innerHTML = 
+              '<td><strong>' + escapeHtml(proposal.name || 'Untitled') + '</strong></td>' +
+              '<td>' + escapeHtml(proposal.type || 'N/A') + '</td>' +
+              '<td><span class="status-badge ' + statusClass + '">' + escapeHtml(proposal.status || 'Draft') + '</span></td>' +
+              '<td><div class="progress-bar"><div class="progress-fill" style="width: ' + (proposal.progress || 0) + '%"></div></div> ' + (proposal.progress || 0) + '%</td>' +
+              '<td>' + escapeHtml(proposal.owner || 'Unknown') + '</td>' +
+              '<td>' + formatDate(proposal.updatedAt) + '</td>' +
+              '<td><div class="actions">' +
+                '<button class="btn btn-secondary" onclick="viewProposal(\'' + (proposal.id || '') + '\')">View</button>' +
+                '<button class="btn" onclick="editProposal(\'' + (proposal.id || '') + '\')">Edit</button>' +
+              '</div></td>';
+            tbodyEl.appendChild(row);
+            console.log('Row added successfully');
+          } catch (e) {
+            console.error('Error adding proposal row', index, ':', e);
+          }
+        });
+        
+        console.log('=== displayProposals END: Successfully displayed', proposals.length, 'proposals ===');
+      } catch (e) {
+        console.error('=== displayProposals ERROR ===');
+        console.error('Error:', e);
+        console.error('Stack:', e.stack);
+        alert('Error displaying proposals: ' + e.message);
       }
-      
-      document.getElementById('emptyState').style.display = 'none';
-      document.getElementById('proposalsTable').style.display = 'table';
-      
-      var tbody = document.getElementById('proposalsBody');
-      tbody.innerHTML = '';
-      
-      filteredProposals.forEach(function(proposal) {
-        var row = document.createElement('tr');
-        row.innerHTML = 
-          '<td><strong>' + escapeHtml(proposal.name) + '</strong></td>' +
-          '<td>' + escapeHtml(proposal.type) + '</td>' +
-          '<td><span class="status-badge status-' + proposal.status.toLowerCase().replace(/\s+/g, '-') + '">' + escapeHtml(proposal.status) + '</span></td>' +
-          '<td><div class="progress-bar"><div class="progress-fill" style="width: ' + proposal.progress + '%"></div></div> ' + proposal.progress + '%</td>' +
-          '<td>' + escapeHtml(proposal.owner) + '</td>' +
-          '<td>' + formatDate(proposal.updatedAt) + '</td>' +
-          '<td><div class="actions">' +
-            '<button class="btn btn-secondary" onclick="viewProposal(\'' + proposal.id + '\')">View</button>' +
-            '<button class="btn" onclick="editProposal(\'' + proposal.id + '\')">Edit</button>' +
-          '</div></td>';
-        tbody.appendChild(row);
-      });
     }
     
     function filterProposals() {
@@ -461,8 +539,12 @@
     }
     
     function showError(error) {
-      alert('Error: ' + error.message);
+      console.error('Error in UI:', error);
+      console.error('Error details:', JSON.stringify(error));
+      alert('Error: ' + (error.message || error.toString()));
       document.getElementById('loading').style.display = 'none';
+      document.getElementById('emptyState').style.display = 'block';
+      document.getElementById('emptyState').innerHTML = '<h2>Error Loading Proposals</h2><p>' + (error.message || error.toString()) + '</p><p>Check browser console (F12) for details.</p>';
     }
   </script>
 </body>
