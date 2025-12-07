@@ -519,7 +519,24 @@
     });
     
     function viewProposal(proposalId) {
-      google.script.run.showProposalDetail(proposalId);
+      try {
+        google.script.run
+          .withSuccessHandler(function(baseUrl) {
+            var url = baseUrl + '?proposalId=' + encodeURIComponent(proposalId);
+            console.log('Opening proposal detail:', url);
+            window.open(url, '_blank');
+          })
+          .withFailureHandler(function(err) {
+            console.error('Failed to get web app URL, falling back to current origin/path:', err);
+            var fallback = window.location.origin + window.location.pathname + '?proposalId=' + encodeURIComponent(proposalId);
+            window.open(fallback, '_blank');
+          })
+          .getWebAppUrl();
+      } catch (e) {
+        console.error('Error building detail URL:', e);
+        var fallback = window.location.origin + window.location.pathname + '?proposalId=' + encodeURIComponent(proposalId);
+        window.open(fallback, '_blank');
+      }
     }
     
     function editProposal(proposalId) {

@@ -359,20 +359,23 @@
     var proposal = null;
     var isDirty = false;
     
-    // Get proposal ID from URL parameters or parent
+    // Get proposal ID from URL parameters
     window.onload = function() {
-      // In Google Apps Script, we'd get this from the server
-      // For now, we'll load it via a server call
+      var params = new URLSearchParams(window.location.search);
+      proposalId = params.get('proposalId');
+      console.log('Detail page loaded for proposalId:', proposalId);
+      if (!proposalId) {
+        alert('No proposalId provided in URL');
+        return;
+      }
       loadProposal();
     };
     
     function loadProposal() {
-      // This would be called with the actual proposal ID
-      // For demo purposes, we'll need to get it from the parent
       google.script.run
         .withSuccessHandler(displayProposal)
         .withFailureHandler(showError)
-        .getProposalData(proposalId || 'demo-id');
+        .getProposalData(proposalId);
     }
     
     function displayProposal(data) {

@@ -84,11 +84,27 @@ function showProposalDashboard() {
 }
 
 /**
- * Web app entry point - returns the dashboard HTML
- * Deploy this function as a web app to access via URL
+ * Web app entry point
+ * - If proposalId is present, render proposal detail view
+ * - Otherwise render the dashboard
  */
-function doGet() {
+function doGet(e) {
+  if (e && e.parameter && e.parameter.proposalId) {
+    var html = HtmlService.createTemplateFromFile('proposal-detail')
+      .evaluate()
+      .setWidth(1000)
+      .setHeight(800)
+      .setTitle('Proposal Details');
+    return html;
+  }
   return showProposalDashboard();
+}
+
+/**
+ * Return the current web app URL for client-side navigation
+ */
+function getWebAppUrl() {
+  return ScriptApp.getService().getUrl();
 }
 
 /**
