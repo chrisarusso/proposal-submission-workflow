@@ -284,24 +284,6 @@
   </div>
   
   <div class="filters">
-    <label>Status:</label>
-    <select id="statusFilter" onchange="filterProposals()">
-      <option value="">All</option>
-      <option value="Draft">Draft</option>
-      <option value="In Progress">In Progress</option>
-      <option value="In Review">In Review</option>
-      <option value="Ready for Submission">Ready for Submission</option>
-      <option value="Submitted">Submitted</option>
-      <option value="Closed">Closed</option>
-    </select>
-    
-    <label>Type:</label>
-    <select id="typeFilter" onchange="filterProposals()">
-      <option value="">All</option>
-      <option value="RFP">RFP</option>
-      <option value="Client">Client</option>
-    </select>
-    
     <label>Search:</label>
     <input type="text" id="searchInput" placeholder="Search proposals..." onkeyup="filterProposals()">
   </div>
@@ -316,11 +298,10 @@
       <thead>
         <tr>
           <th>Proposal Name</th>
-          <th>Type</th>
-          <th>Status</th>
+          <th>Stage</th>
           <th id="dueDateHeader" style="cursor:pointer;" onclick="toggleDueDateSort()">Due Date <span id="dueDateSortIndicator">▲</span></th>
-          <th>Progress</th>
-          <th>Owner</th>
+          <th>Creator</th>
+          <th>Assignee</th>
           <th>Last Updated</th>
           <th>Actions</th>
         </tr>
@@ -339,13 +320,6 @@
           <label>Proposal Document (Doc/Slide) *</label>
           <input type="text" id="proposalDocUrl" list="docSuggestions" placeholder="Start typing document title..." oninput="handleDocSearchInput(this.value)" required>
           <datalist id="docSuggestions"></datalist>
-        </div>
-        <div class="form-group">
-          <label>Type *</label>
-          <select id="proposalType" required>
-            <option value="RFP">RFP</option>
-            <option value="Client">Client</option>
-          </select>
         </div>
         <div class="form-group">
           <label>Assignee (email) *</label>
@@ -379,6 +353,8 @@
     var docSearchTimer = null;
     var docSearchResults = [];
     var assigneeInputEl = null;
+    var adminEmail = 'chris@savaslabs.com';
+    var statusOrder = [];
     
     // Wait for page to be fully loaded
     window.addEventListener('load', function() {
@@ -390,13 +366,31 @@
       google.script.run
         .withSuccessHandler(function(email) {
           currentUserEmail = (email || '').toLowerCase();
-          loadTeamEmailsAndProposals();
+          loadStatusOptions();
         })
         .withFailureHandler(function(err) {
           console.error('Failed to get current user email', err);
-          loadTeamEmailsAndProposals(); // still try to load proposals
+          loadStatusOptions(); // still try to load proposals
         })
         .getCurrentUserEmail();
+    }
+
+    function loadStatusOptions() {
+      google.script.run
+        .withSuccessHandler(function(opts) {
+          if (Array.isArray(opts) && opts.length > 0) {
+            statusOrder = opts;
+          } else {
+            statusOrder = ['Draft', 'In Progress', 'In Review', 'Ready for Submission', 'Submitted', 'Closed'];
+          }
+          loadTeamEmailsAndProposals();
+        })
+        .withFailureHandler(function(err) {
+          console.error('Failed to load status options', err);
+          statusOrder = ['Draft', 'In Progress', 'In Review', 'Ready for Submission', 'Submitted', 'Closed'];
+          loadTeamEmailsAndProposals();
+        })
+        .getStatusOptions();
     }
 
     function loadTeamEmailsAndProposals() {
@@ -532,21 +526,31 @@
           try {
             console.log('Adding proposal', index, ':', proposal.name, proposal.id);
             var row = document.createElement('tr');
-            var statusClass = 'status-' + (proposal.status || 'draft').toLowerCase().replace(/\s+/g, '-');
-            var canDelete = currentUserEmail && proposal.owner && proposal.owner.toLowerCase() === currentUserEmail;
+          var stageVal = proposal.stage || proposal.status || 'draft';
+          var statusClass = 'status-' + stageVal.toLowerCase().replace(/\s+/g, '-');
+          var canDelete = currentUserEmail && proposal.owner && proposal.owner.toLowerCase() === currentUserEmail;
+          var isAdmin = currentUserEmail && currentUserEmail === adminEmail;
+          var isAssignee = currentUserEmail && proposal.assignee && proposal.assignee.toLowerCase() === currentUserEmail;
+          var selectId = 'statusSelect-' + (proposal.id || index);
+          var nextSt = getNextStatus(proposal.status);
+          var stageCellHtml = '<span class="status-badge ' + statusClass + '">' + escapeHtml(stageVal || 'Draft') + '</span>';
+          if (isAdmin || isAssignee) {
+            var opts = '';
+            opts += '<option value="' + (proposal.status || '') + '" selected>' + (proposal.status || 'Current') + '</option>';
+            if (nextSt) {
+              opts += '<option value="' + nextSt + '">' + nextSt + '</option>';
+            }
+            stageCellHtml = '<select id="' + selectId + '" class="btn" style="padding:6px 8px;" ' + (nextSt ? '' : 'disabled') + ' onchange="advanceProposal(\'' + (proposal.id || '') + '\', this.value)">' + opts + '</select>';
+          }
+          var actionsHtml = canDelete ? '<button class="btn btn-danger" onclick="deleteProposal(\'' + (proposal.id || '') + '\')">Delete</button>' : '<span style="color:#5f6368;">&nbsp;</span>';
             row.innerHTML = 
               '<td><strong>' + escapeHtml(proposal.name || 'Untitled') + '</strong></td>' +
-              '<td>' + escapeHtml(proposal.type || 'N/A') + '</td>' +
-              '<td><span class="status-badge ' + statusClass + '">' + escapeHtml(proposal.status || 'Draft') + '</span></td>' +
+            '<td>' + stageCellHtml + '</td>' +
               '<td>' + formatDateOnly(proposal.deadline) + '</td>' +
-              '<td><div class="progress-bar"><div class="progress-fill" style="width: ' + (proposal.progress || 0) + '%"></div></div> ' + (proposal.progress || 0) + '%</td>' +
-              '<td>' + escapeHtml(proposal.owner || 'Unknown') + '</td>' +
+              '<td>' + escapeHtml(proposal.creator || proposal.owner || 'Unknown') + '</td>' +
+              '<td>' + escapeHtml(proposal.assignee || '') + '</td>' +
               '<td>' + formatDate(proposal.updatedAt) + '</td>' +
-              '<td><div class="actions">' +
-                '<button class="btn btn-secondary" onclick="viewProposal(\'' + (proposal.id || '') + '\')">View</button>' +
-                '<button class="btn" onclick="editProposal(\'' + (proposal.id || '') + '\')">Edit</button>' +
-                (canDelete ? '<button class="btn btn-danger" onclick="deleteProposal(\'' + (proposal.id || '') + '\')">Delete</button>' : '') +
-              '</div></td>';
+            '<td><div class="actions">' + actionsHtml + '</div></td>';
             tbodyEl.appendChild(row);
             console.log('Row added successfully');
           } catch (e) {
@@ -564,18 +568,16 @@
     }
     
     function filterProposals() {
-      var statusFilter = document.getElementById('statusFilter').value;
-      var typeFilter = document.getElementById('typeFilter').value;
       var searchTerm = document.getElementById('searchInput').value.toLowerCase();
       
       filteredProposals = applyDueDateSort(allProposals.filter(function(proposal) {
-        var matchStatus = !statusFilter || proposal.status === statusFilter;
-        var matchType = !typeFilter || proposal.type === typeFilter;
         var matchSearch = !searchTerm || 
           proposal.name.toLowerCase().indexOf(searchTerm) !== -1 ||
-          proposal.owner.toLowerCase().indexOf(searchTerm) !== -1;
+          (proposal.owner || '').toLowerCase().indexOf(searchTerm) !== -1 ||
+          (proposal.creator || '').toLowerCase().indexOf(searchTerm) !== -1 ||
+          (proposal.assignee || '').toLowerCase().indexOf(searchTerm) !== -1;
         
-        return matchStatus && matchType && matchSearch;
+        return matchSearch;
       }));
       
       displayProposals(filteredProposals);
@@ -617,7 +619,7 @@
       
       var proposalData = {
         name: null,
-        type: document.getElementById('proposalType').value,
+        type: 'RFP',
         deadline: document.getElementById('proposalDeadline').value || null,
         documentUrl: null,
         assignees: (document.getElementById('proposalAssignees').value || '')
@@ -689,13 +691,7 @@
         google.script.run
           .withSuccessHandler(function(baseUrl) {
             try {
-              // Normalize base URL (remove query/hash if present)
-              var clean = (baseUrl || '').split('#')[0];
-              clean = clean.split('?')[0];
-              // If we somehow got the userCodeAppPanel URL, fall back to current path
-              if (!clean || clean.indexOf('/exec') === -1) {
-                clean = window.location.origin + window.location.pathname;
-              }
+              var clean = normalizeWebAppUrl(baseUrl);
               var sep = clean.indexOf('?') === -1 ? '?' : '&';
               var url = clean + sep + 'proposalId=' + encodeURIComponent(proposalId);
               console.log('Opening proposal detail:', url);
@@ -895,6 +891,73 @@
       errEl.style.display = 'block';
       input.classList.add('input-error');
     }
+  }
+
+  function getNextStatus(currentStatus) {
+    var idx = statusOrder.indexOf(currentStatus);
+    if (idx === -1 || idx === statusOrder.length - 1) {
+      return statusOrder[statusOrder.length - 1];
+    }
+    return statusOrder[idx + 1];
+  }
+
+  function advanceProposal(proposalId, targetStatus) {
+    if (!targetStatus) return;
+    setLoading('Advancing...');
+    google.script.run
+      .withSuccessHandler(function() {
+        clearLoading();
+        refreshDashboard();
+      })
+      .withFailureHandler(function(err) {
+        clearLoading();
+        showError(err);
+      })
+      .updateProposalStatus(proposalId, targetStatus);
+  }
+
+  function updateStatus(proposalId, selectId) {
+    var sel = document.getElementById(selectId);
+    if (!sel) return;
+    var target = sel.value;
+    setLoading('Updating status...');
+    google.script.run
+      .withSuccessHandler(function() {
+        clearLoading();
+        refreshDashboard();
+      })
+      .withFailureHandler(function(err) {
+        clearLoading();
+        showError(err);
+      })
+      .updateProposalStatus(proposalId, target);
+  }
+
+  function normalizeWebAppUrl(baseUrl) {
+    // Start from provided base, else current page URL
+    var href = baseUrl && baseUrl.trim() ? baseUrl : window.location.href;
+    var clean = href.split('#')[0].split('?')[0];
+    // Normalize known patterns to /exec
+    clean = clean.replace(/\/userCodeAppPanel.*/i, '/exec');
+    clean = clean.replace(/\/dev$/i, '/exec');
+    // If we still don't have /exec, append it to origin/path
+    if (clean.indexOf('/exec') === -1) {
+      var originPath = window.location.origin + window.location.pathname;
+      if (originPath.indexOf('/exec') === -1) {
+        // If pathname already ends with /dev or /exec-like, swap to /exec
+        originPath = originPath.replace(/\/dev$/i, '/exec');
+        if (originPath.indexOf('/exec') === -1) {
+          // last resort: append /exec
+          if (originPath.endsWith('/')) {
+            originPath = originPath + 'exec';
+          } else {
+            originPath = originPath + '/exec';
+          }
+        }
+      }
+      clean = originPath;
+    }
+    return clean;
   }
 
   function clearAssigneeValidation() {

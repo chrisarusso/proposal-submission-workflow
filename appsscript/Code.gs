@@ -11,6 +11,7 @@ var CHECKLIST_TEMPLATE_ID = ''; // Optional: If checklist is stored in a Google 
 // Sheet structure constants
 var SHEET_NAME = 'Proposals';
 var DATA_SHEET_NAME = 'ProposalData'; // Hidden sheet for storing full proposal data
+var STATUS_OPTIONS = ['Organize Info', 'Prepare Strategic Approach', 'Complete Estimates', 'Prepare Proposal', 'Final Review', 'Submit', 'Prep Demo'];
 
 /**
  * Debug function to check Sheet ID configuration
@@ -498,12 +499,13 @@ function createProposal(proposalData) {
   var proposalId = Utilities.getUuid();
   var user = Session.getActiveUser().getEmail();
   
+  var initialStatus = (STATUS_OPTIONS && STATUS_OPTIONS.length > 0) ? STATUS_OPTIONS[0] : 'Draft';
   var proposal = {
     id: proposalId,
     name: incomingName || 'Untitled Proposal',
-    type: proposalData.type || 'RFP', // RFP or Client
-    status: 'Draft',
-    stage: 'early',
+    type: proposalData.type || 'RFP', // kept for compatibility
+    status: initialStatus,
+    stage: initialStatus,
     owner: user,
     assignees: incomingAssignees,
     deadline: proposalData.deadline || null,
@@ -943,6 +945,13 @@ function listUsersDebug() {
 }
 
 /**
+ * Expose status options (stage choices) as a setting.
+ */
+function getStatusOptions() {
+  return STATUS_OPTIONS;
+}
+
+/**
  * Delete a proposal (owner-only).
  */
 function deleteProposal(proposalId) {
@@ -1118,16 +1127,21 @@ function getAllProposals() {
         if (jsonData) {
           var proposal = JSON.parse(jsonData);
           Logger.log('Row ' + i + ': Parsed proposal - name: ' + proposal.name + ', status: ' + proposal.status);
+          // Always derive display title from source document when possible
+          var displayName = proposal.documentId ? (getDocumentName(proposal.documentId) || proposal.name) : proposal.name;
           
           // Only include open proposals
           if (proposal.status !== 'Closed') {
             proposals.push({
               id: proposal.id,
-              name: proposal.name,
+              name: displayName,
               type: proposal.type,
               status: proposal.status,
+              stage: proposal.stage,
               progress: proposal.progress,
-              owner: proposal.owner,
+              owner: proposal.owner, // kept for compatibility
+              creator: proposal.owner,
+              assignee: proposal.assignees && proposal.assignees.length > 0 ? proposal.assignees[0] : '',
               updatedAt: proposal.updatedAt,
               deadline: proposal.deadline
             });
@@ -1165,15 +1179,8 @@ function updateProposalStatus(proposalId, newStatus) {
   
   var oldStatus = proposal.status;
   proposal.status = newStatus;
-  
-  // Update stage based on status
-  if (newStatus === 'Draft' || newStatus === 'In Progress') {
-    proposal.stage = 'early';
-  } else if (newStatus === 'In Review') {
-    proposal.stage = 'mid';
-  } else if (newStatus === 'Ready for Submission' || newStatus === 'Submitted') {
-    proposal.stage = 'late';
-  }
+  // Keep stage aligned to status list (no early/mid/late mapping)
+  proposal.stage = newStatus;
   
   saveProposalData(proposalId, proposal);
   
@@ -1392,7 +1399,7 @@ function updateMasterStatusTable(sheet, data) {
   
   // Set headers if first time
   if (values.length === 0) {
-    var headers = ['Proposal ID', 'Proposal Name', 'Type', 'Status', 'Progress %', 'Owner', 'Last Updated', 'Deadline', 'Next Action'];
+    var headers = ['Proposal ID', 'Proposal Name', 'Type', 'Status', 'Progress %', 'Creator', 'Assignee', 'Last Updated', 'Deadline', 'Next Action'];
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
     sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
     values = [[headers]];
@@ -1412,11 +1419,12 @@ function updateMasterStatusTable(sheet, data) {
   // Prepare row data
   var rowData = [
     data.id,
-    data.name,
+    (data.documentId ? (getDocumentName(data.documentId) || data.name) : data.name),
     data.type,
     data.status,
     data.progress + '%',
     data.owner,
+    (data.assignees && data.assignees.length > 0 ? data.assignees[0] : ''),
     data.updatedAt ? new Date(data.updatedAt).toLocaleString() : '',
     data.deadline ? new Date(data.deadline).toLocaleDateString() : '',
     getNextAction(data)
