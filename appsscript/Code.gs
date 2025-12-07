@@ -452,6 +452,44 @@ function createProposal(proposalData) {
   
   Logger.log('createProposal called');
   Logger.log('masterSheetId (from helper): [' + masterSheetId + ']');
+
+  // Enforce unique proposal name (case-insensitive, trimmed)
+  var incomingName = (proposalData.name || '').trim();
+
+  // Prevent reusing an active document across proposals
+  if (proposalData.documentId) {
+    var docConflict = findOpenProposalByDocumentId(proposalData.documentId);
+    if (docConflict) {
+      throw new Error('That document is already linked to an open proposal ("' + docConflict.name + '", ID: ' + docConflict.id + ').');
+    }
+  }
+
+  // Validate document exists / accessible if provided
+  if (proposalData.documentId) {
+    validateDocumentAccess(proposalData.documentId);
+    // Derive name from document title if none provided
+    if (!incomingName) {
+      incomingName = getDocumentName(proposalData.documentId);
+    }
+  }
+
+  if (!incomingName) {
+    incomingName = 'Untitled Proposal';
+  }
+
+  var existing = findProposalByName(incomingName);
+  if (existing) {
+    throw new Error('A proposal named "' + incomingName + '" already exists (ID: ' + existing.id + '). Use a unique name.');
+  }
+
+  // Require at least one assignee
+  var incomingAssignees = proposalData.assignees || [];
+  if (typeof incomingAssignees === 'string' && incomingAssignees.trim() !== '') {
+    incomingAssignees = incomingAssignees.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+  }
+  if (!incomingAssignees || incomingAssignees.length === 0) {
+    throw new Error('At least one assignee is required.');
+  }
   
   if (!masterSheetId || masterSheetId === '') {
     throw new Error('MASTER_STATUS_SHEET_ID not configured. Please run initializeSheetIds() or set Script Properties.');
@@ -462,12 +500,12 @@ function createProposal(proposalData) {
   
   var proposal = {
     id: proposalId,
-    name: proposalData.name || 'Untitled Proposal',
+    name: incomingName || 'Untitled Proposal',
     type: proposalData.type || 'RFP', // RFP or Client
     status: 'Draft',
     stage: 'early',
     owner: user,
-    assignees: proposalData.assignees || [],
+    assignees: incomingAssignees,
     deadline: proposalData.deadline || null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -573,6 +611,16 @@ function saveProposalData(proposalId, data) {
     var proposalsSheet = getOrCreateSheet(spreadsheet, SHEET_NAME);
     var dataSheet = getOrCreateSheet(spreadsheet, DATA_SHEET_NAME);
   
+    // Refresh name from document if available (ensures UI reflects latest doc title)
+    if (data && data.documentId) {
+      try {
+        var docName = getDocumentName(data.documentId);
+        if (docName) {
+          data.name = docName;
+        }
+      } catch (ignore) {}
+    }
+
     // Store full proposal data as JSON in data sheet
     var dataRange = dataSheet.getDataRange();
     var dataValues = dataRange.getValues();
@@ -647,6 +695,309 @@ function getProposalData(proposalId) {
     Logger.log('Error getting proposal data: ' + e.toString());
     return null;
   }
+}
+
+/**
+ * Return the current user's email (for UI gating)
+ */
+function getCurrentUserEmail() {
+  return Session.getActiveUser().getEmail();
+}
+
+/**
+ * Find proposal by name (case-insensitive, trimmed). Returns parsed proposal or null.
+ */
+function findProposalByName(name) {
+  if (!name) return null;
+  var masterSheetId = getMasterStatusSheetId();
+  if (!masterSheetId) return null;
+
+  try {
+    var spreadsheet = SpreadsheetApp.openById(masterSheetId);
+    var dataSheet = getOrCreateSheet(spreadsheet, DATA_SHEET_NAME);
+    var dataValues = dataSheet.getDataRange().getValues();
+    var target = name.trim().toLowerCase();
+
+    for (var i = 1; i < dataValues.length; i++) {
+      var jsonData = dataValues[i][1];
+      if (!jsonData) continue;
+      try {
+        var proposal = JSON.parse(jsonData);
+        if (proposal && proposal.name && proposal.name.trim().toLowerCase() === target) {
+          return proposal;
+        }
+      } catch (e) {
+        Logger.log('findProposalByName parse error at row ' + (i + 1) + ': ' + e.toString());
+      }
+    }
+  } catch (e2) {
+    Logger.log('findProposalByName error: ' + e2.toString());
+  }
+
+  return null;
+}
+
+/**
+ * Find an open proposal by documentId (status not Closed). Returns parsed proposal or null.
+ */
+function findOpenProposalByDocumentId(documentId) {
+  if (!documentId) return null;
+  var masterSheetId = getMasterStatusSheetId();
+  if (!masterSheetId) return null;
+
+  try {
+    var spreadsheet = SpreadsheetApp.openById(masterSheetId);
+    var dataSheet = getOrCreateSheet(spreadsheet, DATA_SHEET_NAME);
+    var dataValues = dataSheet.getDataRange().getValues();
+    var target = documentId.trim();
+
+    for (var i = 1; i < dataValues.length; i++) {
+      var jsonData = dataValues[i][1];
+      if (!jsonData) continue;
+      try {
+        var proposal = JSON.parse(jsonData);
+        if (proposal && proposal.documentId && proposal.documentId.trim() === target) {
+          if (!proposal.status || proposal.status !== 'Closed') {
+            return proposal;
+          }
+        }
+      } catch (e) {
+        Logger.log('findOpenProposalByDocumentId parse error at row ' + (i + 1) + ': ' + e.toString());
+      }
+    }
+  } catch (e2) {
+    Logger.log('findOpenProposalByDocumentId error: ' + e2.toString());
+  }
+
+  return null;
+}
+
+/**
+ * Return existing proposal names (case-preserving) for autocomplete.
+ */
+function getExistingProposalNames() {
+  var masterSheetId = getMasterStatusSheetId();
+  if (!masterSheetId) return [];
+
+  try {
+    var spreadsheet = SpreadsheetApp.openById(masterSheetId);
+    var dataSheet = getOrCreateSheet(spreadsheet, DATA_SHEET_NAME);
+    var dataValues = dataSheet.getDataRange().getValues();
+    var names = [];
+    for (var i = 1; i < dataValues.length; i++) {
+      var jsonData = dataValues[i][1];
+      if (!jsonData) continue;
+      try {
+        var proposal = JSON.parse(jsonData);
+        if (proposal && proposal.name) {
+          names.push(proposal.name);
+        }
+      } catch (e) {
+        Logger.log('getExistingProposalNames parse error at row ' + (i + 1) + ': ' + e.toString());
+      }
+    }
+    return dedupeEmails(names); // reuse dedupe helper
+  } catch (e2) {
+    Logger.log('getExistingProposalNames error: ' + e2.toString());
+    return [];
+  }
+}
+
+/**
+ * Search Drive for Docs/Slides by filename (title contains query). Returns limited set.
+ */
+function searchDocsByName(query) {
+  if (!query || query.trim().length < 3) return [];
+  var q = query.trim();
+  var results = [];
+  try {
+    // Only Docs or Slides
+    var it = DriveApp.searchFiles(
+      'title contains "' + q.replace(/"/g, '\\"') + '" and (' +
+      'mimeType = "application/vnd.google-apps.document" or ' +
+      'mimeType = "application/vnd.google-apps.presentation")'
+    );
+    var count = 0;
+    while (it.hasNext() && count < 20) {
+      var f = it.next();
+      var mime = f.getMimeType();
+      // Only include common doc types
+      if (mime.indexOf('document') !== -1 || mime.indexOf('presentation') !== -1 || mime.indexOf('spreadsheet') !== -1) {
+        results.push({
+          id: f.getId(),
+          name: f.getName(),
+          url: f.getUrl(),
+          mimeType: mime
+        });
+        count++;
+      }
+    }
+  } catch (e) {
+    Logger.log('searchDocsByName error: ' + e.toString());
+  }
+  return results;
+}
+
+/**
+ * Validate that a document exists and is accessible.
+ */
+function validateDocumentAccess(documentId) {
+  try {
+    var file = DriveApp.getFileById(documentId);
+    // Touch basic metadata to ensure access
+    file.getName();
+    return true;
+  } catch (e) {
+    throw new Error('Document not accessible. Confirm the link/ID and sharing. Details: ' + e.toString());
+  }
+}
+
+/**
+ * Return team emails. First try Admin Directory (requires service + scope), fallback to TEAM_EMAILS Script Property.
+ */
+function getTeamEmails() {
+  Logger.log('[getTeamEmails] start');
+  // Try Admin Directory if available
+  try {
+    if (typeof AdminDirectory !== 'undefined' && AdminDirectory.Users && AdminDirectory.Users.list) {
+      var users = AdminDirectory.Users.list({
+        customer: 'my_customer',
+        maxResults: 200,
+        orderBy: 'email',
+        projection: 'basic'
+      });
+      if (users && users.users && users.users.length > 0) {
+        var emails = users.users
+          .filter(function(u) { return u && u.primaryEmail && !u.suspended; })
+          .map(function(u) { return u.primaryEmail.toLowerCase(); });
+        var dedupedDir = dedupeEmails(emails);
+        Logger.log('[getTeamEmails] directory returned ' + dedupedDir.length + ' emails');
+        return dedupedDir;
+      }
+    }
+  } catch (e) {
+    Logger.log('[getTeamEmails] directory fetch failed: ' + e.toString());
+  }
+
+  // Fallback to Script Property TEAM_EMAILS
+  var props = PropertiesService.getScriptProperties();
+  var raw = props.getProperty('TEAM_EMAILS') || '';
+  if (!raw) {
+    // As a last resort, return the active user so UI isn't empty
+    var me = Session.getActiveUser() ? Session.getActiveUser().getEmail() : '';
+    var fallback = me ? [me.toLowerCase()] : [];
+    Logger.log('[getTeamEmails] no TEAM_EMAILS set; returning active user only: ' + fallback.length);
+    return fallback;
+  }
+  var propEmails = dedupeEmails(raw.split(',').map(function(s) { return s.trim().toLowerCase(); }).filter(Boolean));
+  Logger.log('[getTeamEmails] TEAM_EMAILS fallback count: ' + propEmails.length);
+  return propEmails;
+}
+
+function dedupeEmails(arr) {
+  var seen = {};
+  var out = [];
+  arr.forEach(function(e) {
+    if (e && !seen[e]) {
+      seen[e] = true;
+      out.push(e);
+    }
+  });
+  return out;
+}
+
+function getDocumentName(documentId) {
+  try {
+    var file = DriveApp.getFileById(documentId);
+    return file.getName();
+  } catch (e) {
+    Logger.log('getDocumentName error: ' + e.toString());
+    return '';
+  }
+}
+
+/**
+ * Debug helper: list a few directory users to confirm scope/permissions.
+ */
+function listUsersDebug() {
+  Logger.log('[listUsersDebug] start');
+  try {
+    var resp = AdminDirectory.Users.list({
+      customer: 'my_customer',
+      maxResults: 5,
+      orderBy: 'email'
+    });
+    if (resp && resp.users) {
+      Logger.log('[listUsersDebug] count=' + resp.users.length);
+      resp.users.forEach(function(u) {
+        Logger.log(' - ' + (u.primaryEmail || '') + ' suspended=' + u.suspended);
+      });
+    } else {
+      Logger.log('[listUsersDebug] no users returned');
+    }
+  } catch (e) {
+    Logger.log('[listUsersDebug] error: ' + e.toString());
+    throw e;
+  }
+  return 'done';
+}
+
+/**
+ * Delete a proposal (owner-only).
+ */
+function deleteProposal(proposalId) {
+  if (!proposalId) {
+    throw new Error('proposalId is required');
+  }
+
+  var masterSheetId = getMasterStatusSheetId();
+  if (!masterSheetId) {
+    throw new Error('MASTER_STATUS_SHEET_ID not configured.');
+  }
+
+  var userEmail = Session.getActiveUser().getEmail();
+  var proposal = getProposalData(proposalId);
+  if (!proposal) {
+    throw new Error('Proposal not found: ' + proposalId);
+  }
+
+  if (!proposal.owner || proposal.owner.toLowerCase() !== userEmail.toLowerCase()) {
+    throw new Error('Only the proposal owner may delete this proposal.');
+  }
+
+  var spreadsheet = SpreadsheetApp.openById(masterSheetId);
+  var dataSheet = getOrCreateSheet(spreadsheet, DATA_SHEET_NAME);
+  var proposalsSheet = getOrCreateSheet(spreadsheet, SHEET_NAME);
+
+  // Remove from data sheet
+  removeProposalRow(dataSheet, proposalId, 0);
+  // Remove from status sheet
+  removeProposalRow(proposalsSheet, proposalId, 0);
+
+  logAction('DELETE', proposalId, {
+    name: proposal.name,
+    owner: proposal.owner
+  });
+
+  return {
+    success: true,
+    deletedId: proposalId
+  };
+}
+
+/**
+ * Remove a row from a sheet by matching value in a column (0-based index).
+ */
+function removeProposalRow(sheet, id, colIndex) {
+  var range = sheet.getDataRange();
+  var values = range.getValues();
+  for (var i = 1; i < values.length; i++) { // skip header
+    if (values[i][colIndex] === id) {
+      sheet.deleteRow(i + 1);
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

@@ -241,6 +241,37 @@
       justify-content: flex-end;
       margin-top: 20px;
     }
+
+    .suggestions {
+      position: relative;
+    }
+    .suggestions-list {
+      position: absolute;
+      z-index: 10;
+      background: white;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+      margin-top: 4px;
+      max-height: 180px;
+      overflow-y: auto;
+      width: 100%;
+    }
+    .suggestion-item {
+      padding: 8px 10px;
+      cursor: pointer;
+    }
+    .suggestion-item:hover {
+      background: #f1f3f4;
+    }
+    .input-error {
+      border-color: #ea4335 !important;
+    }
+    .error-message {
+      color: #d93025;
+      font-size: 12px;
+      margin-top: 4px;
+    }
   </style>
 </head>
 <body>
@@ -287,6 +318,7 @@
           <th>Proposal Name</th>
           <th>Type</th>
           <th>Status</th>
+          <th id="dueDateHeader" style="cursor:pointer;" onclick="toggleDueDateSort()">Due Date <span id="dueDateSortIndicator">▲</span></th>
           <th>Progress</th>
           <th>Owner</th>
           <th>Last Updated</th>
@@ -304,8 +336,9 @@
       <h2>Create New Proposal</h2>
       <form id="createForm">
         <div class="form-group">
-          <label>Proposal Name *</label>
-          <input type="text" id="proposalName" required>
+          <label>Proposal Document (Doc/Slide) *</label>
+          <input type="text" id="proposalDocUrl" list="docSuggestions" placeholder="Start typing document title..." oninput="handleDocSearchInput(this.value)" required>
+          <datalist id="docSuggestions"></datalist>
         </div>
         <div class="form-group">
           <label>Type *</label>
@@ -315,12 +348,17 @@
           </select>
         </div>
         <div class="form-group">
-          <label>Deadline</label>
-          <input type="date" id="proposalDeadline">
+          <label>Assignee (email) *</label>
+          <div class="suggestions">
+            <input type="text" id="proposalAssignees" list="teamEmailsList" placeholder="owner@savaslabs.com" required>
+            <div id="assigneeSuggestions" class="suggestions-list" style="display:none;"></div>
+          </div>
+          <datalist id="teamEmailsList"></datalist>
+          <div id="assigneeError" class="error-message" style="display:none;"></div>
         </div>
         <div class="form-group">
-          <label>Document URL (Google Doc)</label>
-          <input type="text" id="proposalDocUrl" placeholder="https://docs.google.com/document/d/...">
+          <label>Due Date *</label>
+          <input type="date" id="proposalDeadline" required>
         </div>
         <div class="form-actions">
           <button type="button" class="btn btn-secondary" onclick="closeCreateModal()">Cancel</button>
@@ -334,21 +372,89 @@
     console.log('UI script loaded');
     var allProposals = [];
     var filteredProposals = [];
+    var currentUserEmail = '';
+    var dueDateSortDirection = 'asc'; // default ascending
+    var teamEmails = [];
+    var existingProposalNames = [];
+    var docSearchTimer = null;
+    var docSearchResults = [];
+    var assigneeInputEl = null;
     
     // Wait for page to be fully loaded
     window.addEventListener('load', function() {
       console.log('Page loaded, calling getAllProposals');
-      loadProposals();
+      fetchCurrentUserAndLoad();
     });
-    
+
+    function fetchCurrentUserAndLoad() {
+      google.script.run
+        .withSuccessHandler(function(email) {
+          currentUserEmail = (email || '').toLowerCase();
+          loadTeamEmailsAndProposals();
+        })
+        .withFailureHandler(function(err) {
+          console.error('Failed to get current user email', err);
+          loadTeamEmailsAndProposals(); // still try to load proposals
+        })
+        .getCurrentUserEmail();
+    }
+
+    function loadTeamEmailsAndProposals() {
+      google.script.run
+        .withSuccessHandler(function(emails) {
+          console.log('[team emails] loaded', emails);
+          teamEmails = Array.isArray(emails) ? emails : [];
+          populateTeamEmailSuggestions();
+          loadExistingProposalNames();
+        })
+        .withFailureHandler(function(err) {
+          console.error('Failed to load team emails', err);
+          loadExistingProposalNames();
+        })
+        .getTeamEmails();
+    }
+
+    function loadExistingProposalNames() {
+      google.script.run
+        .withSuccessHandler(function(names) {
+          existingProposalNames = Array.isArray(names) ? names : [];
+          loadProposals();
+        })
+        .withFailureHandler(function(err) {
+          console.error('Failed to load proposal names', err);
+          loadProposals();
+        })
+        .getExistingProposalNames();
+    }
+
+    function populateTeamEmailSuggestions() {
+      var list = document.getElementById('teamEmailsList');
+      if (!list) return;
+      list.innerHTML = '';
+      teamEmails.forEach(function(email) {
+        var opt = document.createElement('option');
+        opt.value = email;
+        list.appendChild(opt);
+      });
+      if (!assigneeInputEl) {
+        assigneeInputEl = document.getElementById('proposalAssignees');
+        if (assigneeInputEl) {
+          assigneeInputEl.addEventListener('input', function(e) {
+            updateAssigneeSuggestions(e.target.value);
+            validateAssigneesLive(e.target.value);
+          });
+          assigneeInputEl.addEventListener('blur', function(e) {
+            setTimeout(hideAssigneeSuggestions, 150); // allow click
+          });
+        }
+      }
+    }
+
     function loadProposals() {
       console.log('loadProposals called');
       try {
         google.script.run
-          .withSuccessHandler(function(proposals) {
-            console.log('Success handler called with:', proposals);
-            displayProposals(proposals);
-          })
+          .withSuccessHandler(handleProposalsSuccess)
           .withFailureHandler(function(error) {
             console.error('Failure handler called:', error);
             showError(error);
@@ -364,10 +470,7 @@
     console.log('Attempting immediate load');
     try {
       google.script.run
-        .withSuccessHandler(function(proposals) {
-          console.log('Immediate load success:', proposals);
-          displayProposals(proposals);
-        })
+        .withSuccessHandler(handleProposalsSuccess)
         .withFailureHandler(function(error) {
           console.error('Immediate load error:', error);
           showError(error);
@@ -375,6 +478,13 @@
         .getAllProposals();
     } catch (e) {
       console.error('Immediate load exception:', e);
+    }
+    
+    function handleProposalsSuccess(proposals) {
+      console.log('Success handler called with:', proposals);
+      allProposals = proposals || [];
+      filteredProposals = applyDueDateSort(allProposals.slice());
+      displayProposals(filteredProposals);
     }
     
     function displayProposals(proposals) {
@@ -385,9 +495,6 @@
       console.log('Length:', proposals ? proposals.length : 'null/undefined');
       
       try {
-        allProposals = proposals || [];
-        filteredProposals = proposals || [];
-        
         var loadingEl = document.getElementById('loading');
         var emptyStateEl = document.getElementById('emptyState');
         var tableEl = document.getElementById('proposalsTable');
@@ -426,17 +533,19 @@
             console.log('Adding proposal', index, ':', proposal.name, proposal.id);
             var row = document.createElement('tr');
             var statusClass = 'status-' + (proposal.status || 'draft').toLowerCase().replace(/\s+/g, '-');
+            var canDelete = currentUserEmail && proposal.owner && proposal.owner.toLowerCase() === currentUserEmail;
             row.innerHTML = 
               '<td><strong>' + escapeHtml(proposal.name || 'Untitled') + '</strong></td>' +
               '<td>' + escapeHtml(proposal.type || 'N/A') + '</td>' +
               '<td><span class="status-badge ' + statusClass + '">' + escapeHtml(proposal.status || 'Draft') + '</span></td>' +
+              '<td>' + formatDateOnly(proposal.deadline) + '</td>' +
               '<td><div class="progress-bar"><div class="progress-fill" style="width: ' + (proposal.progress || 0) + '%"></div></div> ' + (proposal.progress || 0) + '%</td>' +
               '<td>' + escapeHtml(proposal.owner || 'Unknown') + '</td>' +
               '<td>' + formatDate(proposal.updatedAt) + '</td>' +
               '<td><div class="actions">' +
                 '<button class="btn btn-secondary" onclick="viewProposal(\'' + (proposal.id || '') + '\')">View</button>' +
                 '<button class="btn" onclick="editProposal(\'' + (proposal.id || '') + '\')">Edit</button>' +
-                '<button class="btn btn-secondary" onclick="countTheFromDashboard(\'' + (proposal.id || '') + '\')">Count \"the\"</button>' +
+                (canDelete ? '<button class="btn btn-danger" onclick="deleteProposal(\'' + (proposal.id || '') + '\')">Delete</button>' : '') +
               '</div></td>';
             tbodyEl.appendChild(row);
             console.log('Row added successfully');
@@ -459,7 +568,7 @@
       var typeFilter = document.getElementById('typeFilter').value;
       var searchTerm = document.getElementById('searchInput').value.toLowerCase();
       
-      filteredProposals = allProposals.filter(function(proposal) {
+      filteredProposals = applyDueDateSort(allProposals.filter(function(proposal) {
         var matchStatus = !statusFilter || proposal.status === statusFilter;
         var matchType = !typeFilter || proposal.type === typeFilter;
         var matchSearch = !searchTerm || 
@@ -467,7 +576,7 @@
           proposal.owner.toLowerCase().indexOf(searchTerm) !== -1;
         
         return matchStatus && matchType && matchSearch;
-      });
+      }));
       
       displayProposals(filteredProposals);
     }
@@ -478,7 +587,7 @@
       document.getElementById('emptyState').style.display = 'none';
       
       google.script.run
-        .withSuccessHandler(displayProposals)
+        .withSuccessHandler(handleProposalsSuccess)
         .withFailureHandler(showError)
         .getAllProposals();
     }
@@ -486,6 +595,17 @@
     function showCreateProposalModal() {
       document.getElementById('createModal').classList.add('active');
       document.getElementById('createForm').reset();
+      // Default due date: one week from today
+      var dueInput = document.getElementById('proposalDeadline');
+      if (dueInput) {
+        var dt = new Date();
+        dt.setDate(dt.getDate() + 7);
+        var yyyy = dt.getFullYear();
+        var mm = ('0' + (dt.getMonth() + 1)).slice(-2);
+        var dd = ('0' + dt.getDate()).slice(-2);
+        dueInput.value = yyyy + '-' + mm + '-' + dd;
+      }
+      clearAssigneeValidation();
     }
     
     function closeCreateModal() {
@@ -496,11 +616,56 @@
       e.preventDefault();
       
       var proposalData = {
-        name: document.getElementById('proposalName').value,
+        name: null,
         type: document.getElementById('proposalType').value,
         deadline: document.getElementById('proposalDeadline').value || null,
-        documentUrl: document.getElementById('proposalDocUrl').value || null
+        documentUrl: null,
+        assignees: (document.getElementById('proposalAssignees').value || '')
       };
+
+      // Resolve document by selected title (matches most recent search results)
+      var docTitleInput = document.getElementById('proposalDocUrl').value || '';
+      if (docTitleInput.trim() !== '') {
+        var matched = docSearchResults.find(function(f) {
+          return f && f.name && f.name.toLowerCase() === docTitleInput.trim().toLowerCase();
+        });
+        if (matched) {
+          proposalData.documentUrl = matched.url;
+          proposalData.documentId = matched.id;
+          proposalData.name = matched.name;
+        } else {
+          // As a fallback, if user pasted a URL, extract ID
+          var matchUrl = docTitleInput.match(/\/d\/([a-zA-Z0-9-_]+)/);
+          if (matchUrl) {
+            proposalData.documentUrl = docTitleInput;
+            proposalData.documentId = matchUrl[1];
+            proposalData.name = docTitleInput; // backend will derive from doc ID
+          } else {
+            alert('Please pick a document from suggestions or paste a valid Doc/Slide URL.');
+            return;
+          }
+        }
+      } else {
+        alert('Please pick a document for this proposal.');
+        return;
+      }
+
+      // Require at least one assignee
+      if (!proposalData.assignees || proposalData.assignees.trim() === '') {
+        alert('Please enter an assignee (email).');
+        return;
+      }
+
+      var emailCheck = validateEmails(proposalData.assignees);
+      if (!emailCheck.valid || emailCheck.parts.length !== 1) {
+        alert('Please enter exactly one valid email address.');
+        return;
+      }
+
+      if (!proposalData.deadline) {
+        alert('Please select a due date.');
+        return;
+      }
       
       // Extract document ID from URL if provided
       if (proposalData.documentUrl) {
@@ -554,25 +719,24 @@
       }
     }
     
-    function editProposal(proposalId) {
+  function editProposal(proposalId) {
       viewProposal(proposalId);
     }
-    
-    function countTheFromDashboard(proposalId) {
+
+    function deleteProposal(proposalId) {
       if (!proposalId) {
         alert('No proposal ID');
         return;
       }
+      if (!confirm('Delete this proposal? This action cannot be undone.')) {
+        return;
+      }
       google.script.run
         .withSuccessHandler(function(res) {
-          if (res && res.success) {
-            alert('Found ' + res.count + ' occurrence(s) of \"the\"');
-          } else {
-            alert('Count failed: ' + (res ? res.message : 'unknown error'));
-          }
+          refreshDashboard();
         })
         .withFailureHandler(showError)
-        .countTheOccurrences(proposalId);
+        .deleteProposal(proposalId);
     }
     
     function formatDate(dateString) {
@@ -580,6 +744,167 @@
       var date = new Date(dateString);
       return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
     }
+
+  function formatDateOnly(dateString) {
+    if (!dateString) return 'N/A';
+    var d = parseDateValue(dateString);
+    return d ? d.toLocaleDateString() : 'N/A';
+  }
+
+  function parseDateValue(val) {
+    if (!val) return null;
+    var d = new Date(val);
+    return isNaN(d) ? null : d;
+  }
+
+  function applyDueDateSort(list) {
+    var sorted = (list || []).slice().sort(function(a, b) {
+      var da = parseDateValue(a && a.deadline);
+      var db = parseDateValue(b && b.deadline);
+      if (!da && !db) return 0;
+      if (!da) return 1;      // no deadline goes last
+      if (!db) return -1;
+      return da - db;         // earliest first
+    });
+    if (dueDateSortDirection === 'desc') {
+      sorted.reverse();
+    }
+    updateDueDateIndicator();
+    return sorted;
+  }
+
+  function toggleDueDateSort() {
+    dueDateSortDirection = dueDateSortDirection === 'asc' ? 'desc' : 'asc';
+    updateDueDateIndicator();
+    filteredProposals = applyDueDateSort(filteredProposals);
+    displayProposals(filteredProposals);
+  }
+
+  function updateDueDateIndicator() {
+    var indicator = document.getElementById('dueDateSortIndicator');
+    if (indicator) {
+      indicator.textContent = dueDateSortDirection === 'asc' ? '▲' : '▼';
+    }
+  }
+
+  function handleDocSearchInput(val) {
+    if (docSearchTimer) {
+      clearTimeout(docSearchTimer);
+    }
+    docSearchTimer = setTimeout(function() {
+      var q = (val || '').trim();
+      if (q.length < 3) return;
+      google.script.run
+        .withSuccessHandler(function(files) {
+          docSearchResults = files || [];
+          var list = document.getElementById('docSuggestions');
+          if (!list) return;
+          list.innerHTML = '';
+          docSearchResults.forEach(function(f) {
+            var opt = document.createElement('option');
+            opt.value = f.name; // show title as the selectable value
+            opt.label = f.name;
+            list.appendChild(opt);
+          });
+        })
+        .withFailureHandler(function(err) {
+          console.error('Doc search failed', err);
+        })
+        .searchDocsByName(q);
+    }, 300);
+  }
+
+  function validateEmails(raw) {
+    if (!raw) return { valid: false, invalid: [], parts: [] };
+    var parts = raw.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+    if (parts.length === 0) return { valid: false, invalid: [], parts: [] };
+    // enforce single email
+    if (parts.length > 1) return { valid: false, invalid: parts.slice(1), parts: parts };
+    var re = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+    var invalid = parts.filter(function(email) { return !re.test(email); });
+    return { valid: invalid.length === 0, invalid: invalid, parts: parts };
+  }
+
+  function updateAssigneeSuggestions(raw) {
+    var listEl = document.getElementById('assigneeSuggestions');
+    if (!listEl) return;
+    var frag = (raw || '').trim();
+    if (!frag || frag.length < 1) {
+      listEl.style.display = 'none';
+      listEl.innerHTML = '';
+      return;
+    }
+    var lower = frag.toLowerCase();
+    var matches = teamEmails
+      .filter(function(e) { return e && e.toLowerCase().indexOf(lower) !== -1; })
+      .slice(0, 8);
+    if (matches.length === 0) {
+      listEl.style.display = 'none';
+      listEl.innerHTML = '';
+      return;
+    }
+    listEl.innerHTML = '';
+    matches.forEach(function(m) {
+      var div = document.createElement('div');
+      div.className = 'suggestion-item';
+      div.textContent = m;
+      div.onclick = function() {
+        insertAssignee(m);
+      };
+      listEl.appendChild(div);
+    });
+    listEl.style.display = 'block';
+  }
+
+  function insertAssignee(email) {
+    var input = document.getElementById('proposalAssignees');
+    if (!input) return;
+    input.value = email;
+    updateAssigneeSuggestions(input.value);
+    validateAssigneesLive(input.value);
+  }
+
+  function getLastEmailFragment(raw) {
+    if (!raw) return '';
+    var parts = raw.split(',');
+    return (parts[parts.length - 1] || '').trim();
+  }
+
+  function hideAssigneeSuggestions() {
+    var listEl = document.getElementById('assigneeSuggestions');
+    if (listEl) listEl.style.display = 'none';
+  }
+
+  function validateAssigneesLive(raw) {
+    var res = validateEmails(raw);
+    var input = document.getElementById('proposalAssignees');
+    var errEl = document.getElementById('assigneeError');
+    if (!input || !errEl) return;
+    if (!raw) {
+      errEl.style.display = 'none';
+      input.classList.remove('input-error');
+      return;
+    }
+    if (res.valid && res.parts.length === 1) {
+      errEl.style.display = 'none';
+      input.classList.remove('input-error');
+    } else {
+      var msg = res.parts.length > 1 ? 'Only one assignee allowed.' :
+        ('Invalid email: ' + (res.invalid.join(', ') || raw));
+      errEl.textContent = msg;
+      errEl.style.display = 'block';
+      input.classList.add('input-error');
+    }
+  }
+
+  function clearAssigneeValidation() {
+    var input = document.getElementById('proposalAssignees');
+    var errEl = document.getElementById('assigneeError');
+    var listEl = document.getElementById('assigneeSuggestions');
+    if (input) input.classList.remove('input-error');
+    if (errEl) errEl.style.display = 'none';
+    if (listEl) listEl.style.display = 'none';
+  }
     
     function escapeHtml(text) {
       var div = document.createElement('div');
