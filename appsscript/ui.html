@@ -241,6 +241,17 @@
       justify-content: flex-end;
       margin-top: 20px;
     }
+    .status-area {
+      margin-top: 16px;
+      padding: 12px;
+      border-radius: 6px;
+      border: 1px solid #dadce0;
+      background: #f8f9fa;
+      color: #3c4043;
+    }
+    .status-area.info { border-color: #c6dafc; background: #e8f0fe; }
+    .status-area.warn { border-color: #f9cc9d; background: #fef7e0; }
+    .status-area.error { border-color: #f6c7c7; background: #fce8e6; }
 
     .suggestions {
       position: relative;
@@ -310,6 +321,7 @@
       </tbody>
     </table>
   </div>
+  <div id="checkStatusArea" class="status-area" style="display:none;"></div>
   
   <!-- Create Proposal Modal -->
   <div id="createModal" class="modal">
@@ -743,6 +755,9 @@
 
   function formatDateOnly(dateString) {
     if (!dateString) return 'N/A';
+    if (typeof dateString === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+      return dateString;
+    }
     var d = parseDateValue(dateString);
     return d ? d.toLocaleDateString() : 'N/A';
   }
@@ -903,14 +918,21 @@
 
   function advanceProposal(proposalId, targetStatus) {
     if (!targetStatus) return;
+    setCheckStatus('Advancing and running checks...', 'info');
     setLoading('Advancing...');
     google.script.run
-      .withSuccessHandler(function() {
+      .withSuccessHandler(function(res) {
         clearLoading();
+        if (res && res.warnings && res.warnings.length) {
+          setCheckStatus(res.warnings.join('\n'), 'warn');
+        } else {
+          setCheckStatus('Stage updated. No warnings detected.', 'info');
+        }
         refreshDashboard();
       })
       .withFailureHandler(function(err) {
         clearLoading();
+        setCheckStatus('Stage update failed: ' + (err && (err.message || err.toString()) ? (err.message || err.toString()) : 'unknown error'), 'error');
         showError(err);
       })
       .updateProposalStatus(proposalId, targetStatus);
@@ -920,17 +942,48 @@
     var sel = document.getElementById(selectId);
     if (!sel) return;
     var target = sel.value;
+    setCheckStatus('Updating stage and running checks...', 'info');
     setLoading('Updating status...');
     google.script.run
-      .withSuccessHandler(function() {
+      .withSuccessHandler(function(res) {
         clearLoading();
+        if (res && res.warnings && res.warnings.length) {
+          setCheckStatus(res.warnings.join('\n'), 'warn');
+        } else {
+          setCheckStatus('Stage updated. No warnings detected.', 'info');
+        }
         refreshDashboard();
       })
       .withFailureHandler(function(err) {
         clearLoading();
+        setCheckStatus('Stage update failed: ' + (err && (err.message || err.toString()) ? (err.message || err.toString()) : 'unknown error'), 'error');
         showError(err);
       })
       .updateProposalStatus(proposalId, target);
+  }
+
+  function setCheckStatus(message, level) {
+    var area = document.getElementById('checkStatusArea');
+    if (!area) return;
+    area.className = 'status-area ' + (level || 'info');
+    area.textContent = message;
+    area.style.display = message ? 'block' : 'none';
+  }
+
+  // Fallback loading helpers (no-op for now, just toggles loading text element)
+  function setLoading(msg) {
+    var loadingEl = document.getElementById('loading');
+    if (loadingEl) {
+      loadingEl.textContent = msg || 'Loading...';
+      loadingEl.style.display = 'block';
+    }
+  }
+
+  function clearLoading() {
+    var loadingEl = document.getElementById('loading');
+    if (loadingEl) {
+      loadingEl.style.display = 'none';
+    }
   }
 
   function normalizeWebAppUrl(baseUrl) {

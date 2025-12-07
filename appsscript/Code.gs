@@ -952,6 +952,31 @@ function getStatusOptions() {
 }
 
 /**
+ * Simple profanity checker on first page/slide of a document.
+ */
+function checkForSwears(documentId) {
+  var flagged = ['fuck', 'shit', 'bitch', 'asshole', 'damn'];
+  var text = '';
+  try {
+    text = getFirstSlideText(documentId);
+  } catch (e) {
+    Logger.log('checkForSwears: getFirstSlideText failed ' + e.toString());
+    throw e;
+  }
+  var lower = (text || '').toLowerCase();
+  var matches = [];
+  flagged.forEach(function(word) {
+    if (lower.indexOf(word) !== -1) {
+      matches.push(word);
+    }
+  });
+  return {
+    found: matches.length > 0,
+    matches: matches
+  };
+}
+
+/**
  * Delete a proposal (owner-only).
  */
 function deleteProposal(proposalId) {
@@ -1172,6 +1197,7 @@ function getAllProposals() {
  * Update proposal status
  */
 function updateProposalStatus(proposalId, newStatus) {
+  Logger.log('[updateProposalStatus] start id=%s new=%s', proposalId, newStatus);
   var proposal = getProposalData(proposalId);
   if (!proposal) {
     throw new Error('Proposal not found: ' + proposalId);
@@ -1189,7 +1215,64 @@ function updateProposalStatus(proposalId, newStatus) {
     newStatus: newStatus
   });
   
-  return proposal;
+  var warnings = [];
+  // POC: when moving from first to second status option, run swear check on first page
+  if (STATUS_OPTIONS && STATUS_OPTIONS.length >= 2 &&
+      oldStatus === STATUS_OPTIONS[0] && newStatus === STATUS_OPTIONS[1]) {
+    try {
+      Logger.log('[updateProposalStatus] running swear check; docId=%s', proposal.documentId || 'none');
+      if (!proposal.documentId) {
+        warnings.push('No document linked; cannot scan for flagged words.');
+      } else {
+        var scan = checkForSwears(proposal.documentId);
+        Logger.log('[updateProposalStatus] swear check result found=%s matches=%s', scan && scan.found, scan && scan.matches ? scan.matches.join(',') : '');
+        if (scan && scan.found && scan.matches && scan.matches.length > 0) {
+          warnings.push('Flagged words detected: ' + scan.matches.join(', '));
+        }
+      }
+    } catch (e) {
+      warnings.push('Swear check failed: ' + e.toString());
+      Logger.log('[updateProposalStatus] swear check exception: ' + e.toString());
+    }
+  }
+  Logger.log('[updateProposalStatus] end id=%s old=%s new=%s warnings=%s', proposalId, oldStatus, newStatus, warnings.join('; '));
+  return {
+    proposal: proposal,
+    warnings: warnings
+  };
+}
+
+/**
+ * Expose status options for UI (config-based)
+ */
+function getStatusOptions() {
+  return STATUS_OPTIONS || [];
+}
+
+/**
+ * Simple profanity checker on first page/slide of a document.
+ */
+function checkForSwears(documentId) {
+  var flagged = ['fuck', 'shit', 'bitch', 'asshole', 'damn'];
+  var text = '';
+  try {
+    text = getFirstSlideText(documentId);
+  } catch (e) {
+    Logger.log('checkForSwears: getFirstSlideText failed ' + e.toString());
+    throw e;
+  }
+  var lower = (text || '').toLowerCase();
+  var matches = [];
+  flagged.forEach(function(word) {
+    if (lower.indexOf(word) !== -1) {
+      matches.push(word);
+    }
+  });
+  Logger.log('checkForSwears: found=%s matches=%s', matches.length > 0, matches.join(','));
+  return {
+    found: matches.length > 0,
+    matches: matches
+  };
 }
 
 /**
@@ -1417,6 +1500,15 @@ function updateMasterStatusTable(sheet, data) {
   }
   
   // Prepare row data
+  var deadlineStr = '';
+  if (data.deadline) {
+    if (typeof data.deadline === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(data.deadline)) {
+      deadlineStr = data.deadline; // keep date-only string to avoid TZ shifts
+    } else {
+      deadlineStr = new Date(data.deadline).toLocaleDateString();
+    }
+  }
+
   var rowData = [
     data.id,
     (data.documentId ? (getDocumentName(data.documentId) || data.name) : data.name),
@@ -1426,7 +1518,7 @@ function updateMasterStatusTable(sheet, data) {
     data.owner,
     (data.assignees && data.assignees.length > 0 ? data.assignees[0] : ''),
     data.updatedAt ? new Date(data.updatedAt).toLocaleString() : '',
-    data.deadline ? new Date(data.deadline).toLocaleDateString() : '',
+    deadlineStr,
     getNextAction(data)
   ];
   
